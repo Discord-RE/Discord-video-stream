@@ -1,5 +1,4 @@
 import sp from "sodium-plus";
-import { webcrypto } from "node:crypto";
 import { max_int32bit } from "../../utils.js";
 const { SodiumPlus } = sp;
 
@@ -10,10 +9,10 @@ export interface TransportEncryptor {
 export class AES256TransportEncryptor implements TransportEncryptor
 {
     private _nonce = 0;
-    private _secretKey: Promise<webcrypto.CryptoKey>;
+    private _secretKey: Promise<CryptoKey>;
     constructor(secretKey: Buffer)
     {
-        this._secretKey = webcrypto.subtle.importKey("raw", 
+        this._secretKey = crypto.subtle.importKey("raw", 
             secretKey,
             {
                 name: "AES-GCM",
@@ -27,7 +26,7 @@ export class AES256TransportEncryptor implements TransportEncryptor
         nonceBuffer.writeUInt32BE(this._nonce);
         this._nonce = (this._nonce + 1) % max_int32bit;
         
-        const ciphertext = Buffer.from(await webcrypto.subtle.encrypt({
+        const ciphertext = Buffer.from(await crypto.subtle.encrypt({
             name: "AES-GCM",
             iv: nonceBuffer,
             additionalData,
