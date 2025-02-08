@@ -78,7 +78,8 @@ export type EncoderOptions = {
     /**
      * Custom headers for HTTP requests
      */
-    customHeaders: Record<string, string>
+    customHeaders: Record<string, string>,
+    seekTime?: number; // <--- ADD THIS LINE
 }
 
 export function prepareStream(
@@ -102,7 +103,8 @@ export function prepareStream(
         customHeaders: {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.3",
             "Connection": "keep-alive",
-        }
+        },
+        seekTime: 0
     } satisfies EncoderOptions;
 
     function mergeOptions(opts: Partial<EncoderOptions>) {
@@ -153,7 +155,9 @@ export function prepareStream(
     
             customHeaders: {
                 ...defaultOptions.customHeaders, ...opts.customHeaders
-            }
+            },
+
+            seekTime: opts.seekTime ?? defaultOptions.seekTime,
         } satisfies EncoderOptions
     }
 
@@ -173,6 +177,11 @@ export function prepareStream(
     const command = ffmpeg(input)
         .addOption('-loglevel', '0')
 
+
+    if (options.seekTime && options.seekTime > 0) {
+            command.outputOption('-ss', String(options.seekTime)); // Add seek *AFTER* input
+            console.log("newApi got seek command")
+    }
     // input options
     const { hardwareAcceleratedDecoding, minimizeLatency, customHeaders } = mergedOptions;
     if (hardwareAcceleratedDecoding)
@@ -318,6 +327,8 @@ export type PlayStreamOptions = {
      * See https://ffmpeg.org/ffmpeg.html#:~:text=%2Dreadrate_initial_burst
      */
     readrateInitialBurst: number | undefined,
+    seekTime?: number;
+    customHeaders?: Record<string, string>; // Add customHeaders here
 }
 
 export async function playStream(
@@ -343,6 +354,8 @@ export async function playStream(
         height: video.height,
         frameRate: video.framerate_num / video.framerate_den,
         readrateInitialBurst: undefined,
+        seekTime: 0,  // Default seek time
+        customHeaders: {}
     } satisfies PlayStreamOptions;
 
     function mergeOptions(opts: Partial<PlayStreamOptions>)
@@ -371,6 +384,11 @@ export async function playStream(
                 isFiniteNonZero(opts.readrateInitialBurst) && opts.readrateInitialBurst > 0
                     ? opts.readrateInitialBurst
                     : defaultOptions.readrateInitialBurst,
+                    
+            seekTime: opts.seekTime ?? defaultOptions.seekTime,
+            customHeaders: {
+                        ...defaultOptions.customHeaders, ...opts.customHeaders
+            }
         } satisfies PlayStreamOptions
     }
 
