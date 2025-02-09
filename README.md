@@ -87,20 +87,16 @@ await streamer.client.login('TOKEN HERE');
 
 ```
 
-Make client join a voice channel and create a stream:
+Make client join a voice channel
 
 ```typescript
 await streamer.joinVoice("GUILD ID HERE", "CHANNEL ID HERE");
-
-const udp = await streamer.createStream({
-    // stream options here
-});
 ```
 
-Start sending media over the udp connection:
+Start sending media
 
 ```typescript
-import { prepareStream, playStream, Util } from "@dank074/discord-video-stream"
+import { prepareStream, playStream, Utils } from "@dank074/discord-video-stream"
 try {
     const { command, output } = prepareStream("DIRECT VIDEO URL OR READABLE STREAM HERE", {
         // Specify either width or height for aspect ratio aware scaling
@@ -185,6 +181,10 @@ h26xPreset?: 'ultrafast' | 'superfast' | 'veryfast' | 'faster' | 'fast' | 'mediu
  * Might create lag in video output in some rare cases
  */
 minimizeLatency?: boolean;
+/**
+ * Custom headers for HTTP requests
+ */
+customHeaders?: Record<string, string>
 ```
 
 ## `playStream` options available
@@ -238,10 +238,6 @@ rtcpSenderReportEnabled?: boolean;
  * ChaCha20-Poly1305 Encryption is faster than AES-256-GCM, except when using AES-NI
  */
 forceChacha20Encryption?: boolean;
-/**
- * Custom headers for HTTP requests
- */
-customHeaders?: Record<string, string>
 ```
 
 ## Performance tips
