@@ -298,6 +298,7 @@ export function prepareStream(
         });
         command.on("end", () => resolve());
     })
+    promise.catch(() => {});
     cancelSignal?.addEventListener("abort", () => command.kill("SIGTERM"));
     command.run();
     
@@ -462,5 +463,5 @@ export async function playStream(
             cleanup();
             resolve();
         });
-    });
+    }).catch(() => {});
 }
