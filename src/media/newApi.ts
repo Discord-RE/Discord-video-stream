@@ -299,7 +299,7 @@ export function prepareStream(
         command.on("end", () => resolve());
     })
     promise.catch(() => {});
-    cancelSignal?.addEventListener("abort", () => command.kill("SIGTERM"));
+    cancelSignal?.addEventListener("abort", () => command.kill("SIGTERM"), { once: true });
     command.run();
     
     return { command, output, promise }
@@ -456,7 +456,7 @@ export async function playStream(
         cancelSignal?.addEventListener("abort", () => {
             cleanup();
             reject(cancelSignal.reason);
-        })
+        }, { once: true })
         vStream.once("finish", () => {
             if (cancelSignal?.aborted)
                 return;
