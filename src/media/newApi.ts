@@ -83,8 +83,10 @@ export type EncoderOptions = {
 
 export function prepareStream(
     input: string | Readable,
-    options: Partial<EncoderOptions> = {}
+    options: Partial<EncoderOptions> = {},
+    cancelSignal?: AbortSignal
 ) {
+    cancelSignal?.throwIfAborted();
     const defaultOptions = {
         noTranscoding: false,
         // negative values = resize by aspect ratio, see https://trac.ffmpeg.org/wiki/Scaling
@@ -281,8 +283,25 @@ export function prepareStream(
             .audioCodec("libopus")
             .audioBitrate(`${bitrateAudio}k`);
 
+    // exit handling
+    const promise = new Promise<void>((resolve, reject) => {
+        command.on("error", (err) => {
+            if (cancelSignal?.aborted)
+                /**
+                 * fluent-ffmpeg might throw an error when SIGTERM is sent to
+                 * the process, so we check if the abort signal is triggered
+                 * and throw that instead
+                 */
+                reject(cancelSignal.reason);
+            else
+                reject(err);
+        });
+        command.on("end", () => resolve());
+    })
+    cancelSignal?.addEventListener("abort", () => command.kill("SIGTERM"));
     command.run();
-    return { command, output }
+    
+    return { command, output, promise }
 }
 
 export type PlayStreamOptions = {
@@ -321,12 +340,18 @@ export type PlayStreamOptions = {
 }
 
 export async function playStream(
-    input: Readable, streamer: Streamer, options: Partial<PlayStreamOptions> = {})
+    input: Readable, streamer: Streamer,
+    options: Partial<PlayStreamOptions> = {},
+    cancelSignal?: AbortSignal
+)
 {
+    cancelSignal?.throwIfAborted();
     if (!streamer.voiceConnection)
         throw new Error("Bot is not connected to a voice channel");
 
     const { video, audio } = await demux(input);
+    cancelSignal?.throwIfAborted();
+
     if (!video)
         throw new Error("No video stream in media");
 
@@ -421,11 +446,20 @@ export async function playStream(
             vStream.on("pts", stopBurst);
         }
     }
-    return new Promise<void>((resolve) => {
-        vStream.once("finish", () => {
+    return new Promise<void>((resolve, reject) => {
+        const cleanup = () => {
             stopStream();
             udp.mediaConnection.setSpeaking(false);
             udp.mediaConnection.setVideoAttributes(false);
+        }
+        cancelSignal?.addEventListener("abort", () => {
+            cleanup();
+            reject(cancelSignal.reason);
+        })
+        vStream.once("finish", () => {
+            if (cancelSignal?.aborted)
+                return;
+            cleanup();
             resolve();
         });
     });
