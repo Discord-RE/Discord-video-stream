@@ -14,15 +14,25 @@ import type { BaseMediaConnection } from './BaseMediaConnection.js';
 function parseLocalPacket(message: Buffer) {
     const packet = Buffer.from(message);
 
-	const ip = packet.subarray(8, packet.indexOf(0, 8)).toString('utf8');
+    let nullIndex = -1;
+    for (let i = 8; i < packet.length; i++) {
+        if (packet[i] === 0) {
+            nullIndex = i;
+            break;
+        }
+    }
+    if (nullIndex === -1) {
+        throw new Error('IP null terminator not found');
+    }
 
-	if (!isIPv4(ip)) {
-		throw new Error('Malformed IP address');
-	}
+    const ip = packet.subarray(8, nullIndex).toString('utf8');
 
-	const port = packet.readUInt16BE(packet.length - 2);
+    if (!isIPv4(ip)) {
+        throw new Error('Malformed IP address');
+    }
 
-	return { ip, port };
+    const port = packet.readUInt16BE(packet.length - 2);
+    return { ip, port };
 }
 
 export class MediaUdp {
