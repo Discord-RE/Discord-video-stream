@@ -154,6 +154,26 @@ export class Streamer {
         });
     }
 
+    public async setStreamPreview(image: Buffer): Promise<void> {
+        if (!this.client.token)
+            throw new Error("Please login :)");
+        if (!this.voiceConnection?.streamConnection)
+            return;
+        const { streamKey } = this.voiceConnection.streamConnection;
+        const data = `data:image/jpeg;base64,${image.toString("base64")}`;
+
+        await fetch(`https://discord.com/api/v9/streams/${streamKey}/preview`, {
+            method: "POST",
+            headers: {
+                'Authorization': this.client.token,
+                'Content-Type': 'application/json',
+                // Do we need this? Can we get user agent from the client itself?
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0'
+            },
+            body: JSON.stringify({ thumbnail: data })
+        });
+    }
+
     public stopStream(): void {
         const stream = this.voiceConnection?.streamConnection;
 
