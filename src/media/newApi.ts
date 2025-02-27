@@ -1,12 +1,17 @@
 import ffmpeg from 'fluent-ffmpeg';
+import pDebounce from 'p-debounce';
 import { demux } from './LibavDemuxer.js';
+import { setTimeout as delay } from 'node:timers/promises';
 import { PassThrough, type Readable } from "node:stream";
-import type { SupportedVideoCodec } from '../utils.js';
-import type { MediaUdp, Streamer } from '../client/index.js';
 import { VideoStream } from './VideoStream.js';
 import { AudioStream } from './AudioStream.js';
 import { isFiniteNonZero } from '../utils.js';
 import { AVCodecID } from './LibavCodecId.js';
+import { createDecoder } from './LibavDecoder.js';
+
+import LibAV from '@lng2004/libav.js-variant-webcodecs-avf-with-decoders';
+import type { SupportedVideoCodec } from '../utils.js';
+import type { MediaUdp, Streamer } from '../client/index.js';
 
 export type EncoderOptions = {
     /**
@@ -338,6 +343,11 @@ export type PlayStreamOptions = {
      * See https://ffmpeg.org/ffmpeg.html#:~:text=%2Dreadrate_initial_burst
      */
     readrateInitialBurst: number | undefined,
+
+    /**
+     * Enable stream preview from input stream (experimental)
+     */
+    streamPreview: boolean,
 }
 
 export async function playStream(
@@ -356,6 +366,7 @@ export async function playStream(
     if (!video)
         throw new Error("No video stream in media");
 
+    const cleanupFuncs: (() => unknown)[] = [];
     const videoCodecMap: Record<number, SupportedVideoCodec> = {
         [AVCodecID.AV_CODEC_ID_H264]: "H264",
         [AVCodecID.AV_CODEC_ID_H265]: "H265",
@@ -369,6 +380,7 @@ export async function playStream(
         height: video.height,
         frameRate: video.framerate_num / video.framerate_den,
         readrateInitialBurst: undefined,
+        streamPreview: false,
     } satisfies PlayStreamOptions;
 
     function mergeOptions(opts: Partial<PlayStreamOptions>)
@@ -397,6 +409,9 @@ export async function playStream(
                 isFiniteNonZero(opts.readrateInitialBurst) && opts.readrateInitialBurst > 0
                     ? opts.readrateInitialBurst
                     : defaultOptions.readrateInitialBurst,
+
+            streamPreview:
+                opts.streamPreview ?? defaultOptions.streamPreview,
         } satisfies PlayStreamOptions
     }
 
@@ -447,11 +462,32 @@ export async function playStream(
             vStream.on("pts", stopBurst);
         }
     }
+    if (mergedOptions.streamPreview)
+    {
+        (async () => {
+            const decoder = await createDecoder(video.codec, video.codecpar);
+            cleanupFuncs.push(() => decoder.free());
+            const updatePreview = pDebounce.promise((packet: LibAV.Packet) => {
+                if (!(packet.flags !== undefined && packet.flags & LibAV.AV_PKT_FLAG_KEY))
+                    return;
+                return Promise.all([
+                    delay(5000),
+                    (async() => {
+                        const frame = await decoder.decode([packet]);
+                    })
+                ])
+            })
+        })();
+    }
     return new Promise<void>((resolve, reject) => {
-        const cleanup = () => {
+        cleanupFuncs.push(() => {
             stopStream();
             udp.mediaConnection.setSpeaking(false);
             udp.mediaConnection.setVideoAttributes(false);
+        });
+        const cleanup = () => {
+            for (const f of cleanupFuncs)
+                f();
         }
         cancelSignal?.addEventListener("abort", () => {
             cleanup();
