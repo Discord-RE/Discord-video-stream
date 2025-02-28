@@ -477,20 +477,18 @@ export async function playStream(
 
                 return Promise.all([
                     delay(5000),
-                    (async() => {
-                        const image = await sharp(frame.data, {
-                            raw: {
-                                width: frame.width ?? 0,
-                                height: frame.height ?? 0,
-                                channels: 4
-                            }
-                        })
-                        .resize(1000)
-                        .jpeg()
-                        .toBuffer();
-                        await streamer.setStreamPreview(image);
+                    sharp(frame.data, {
+                        raw: {
+                            width: frame.width ?? 0,
+                            height: frame.height ?? 0,
+                            channels: 4
+                        }
                     })
-                ])
+                    .resize(1000)
+                    .jpeg()
+                    .toBuffer()
+                    .then(image => streamer.setStreamPreview(image))
+                ]);
             });
             video.stream.on("data", updatePreview);
             cleanupFuncs.push(() => video.stream.off("data", updatePreview));
