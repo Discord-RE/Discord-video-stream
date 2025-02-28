@@ -1,4 +1,4 @@
-import { AVMEDIA_TYPE_VIDEO } from "@lng2004/libav.js-variant-webcodecs-avf-with-decoders";
+import { AV_PIX_FMT_RGBA, AVMEDIA_TYPE_VIDEO } from "@lng2004/libav.js-variant-webcodecs-avf-with-decoders";
 import { libavInstance } from "./LibavInstance.js";
 import type LibAV from "@lng2004/libav.js-variant-webcodecs-avf-with-decoders";
 
@@ -13,9 +13,15 @@ export async function createDecoder(id: number, codecpar: number)
         "format=pix_fmts=rgba",
         {
             type: AVMEDIA_TYPE_VIDEO,
+            width: await libav.AVCodecParameters_width(codecpar),
+            height: await libav.AVCodecParameters_height(codecpar),
+            pix_fmt: await libav.AVCodecParameters_format(codecpar),
         },
         {
-            type: AVMEDIA_TYPE_VIDEO
+            type: AVMEDIA_TYPE_VIDEO,
+            width: await libav.AVCodecParameters_width(codecpar),
+            height: await libav.AVCodecParameters_height(codecpar),
+            pix_fmt: AV_PIX_FMT_RGBA
         }
     );
     return {
