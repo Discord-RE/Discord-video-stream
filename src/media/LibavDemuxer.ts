@@ -1,5 +1,5 @@
 import pDebounce from "p-debounce";
-import LibAV from "@lng2004/libav.js-variant-webcodecs-avf-with-decoders";
+import LibAV, { type CodecParameters } from "@lng2004/libav.js-variant-webcodecs-avf-with-decoders";
 import { libavInstance } from "./LibavInstance.js";
 import { Log } from "debug-level";
 import { uid } from "uid";
@@ -15,7 +15,7 @@ import type { Readable } from "node:stream";
 type MediaStreamInfoCommon = {
     index: number,
     codec: AVCodecID,
-    codecpar: number,
+    codecpar: CodecParameters,
 }
 type VideoStreamInfo = MediaStreamInfoCommon & {
     width: number,
@@ -236,17 +236,18 @@ export async function demux(input: Readable) {
             cleanup();
             throw new Error(`Video codec ${codecName} is not allowed`)
         }
+        const codecpar = await libav.ff_copyout_codecpar(vStream.codecpar);
         vInfo = {
             index: vStream.index,
             codec: vStream.codec_id,
-            codecpar: vStream.codecpar,
-            width: await libav.AVCodecParameters_width(vStream.codecpar),
-            height: await libav.AVCodecParameters_height(vStream.codecpar),
+            codecpar,
+            width: codecpar.width ?? 0,
+            height: codecpar.height ?? 0,
             framerate_num: await libav.AVCodecParameters_framerate_num(vStream.codecpar),
             framerate_den: await libav.AVCodecParameters_framerate_den(vStream.codecpar),
         }
         if (vStream.codec_id === AVCodecID.AV_CODEC_ID_H264) {
-            const { extradata } = await libav.ff_copyout_codecpar(vStream.codecpar);
+            const { extradata } = codecpar;
             vInfo = {
                 ...vInfo,
                 // biome-ignore lint/style/noNonNullAssertion: will always be non-null for our use case
@@ -254,7 +255,7 @@ export async function demux(input: Readable) {
             }
         }
         else if (vStream.codec_id === AVCodecID.AV_CODEC_ID_H265) {
-            const { extradata } = await libav.ff_copyout_codecpar(vStream.codecpar);
+            const { extradata } = codecpar;
             vInfo = {
                 ...vInfo,
                 // biome-ignore lint/style/noNonNullAssertion: will always be non-null for our use case
@@ -271,11 +272,12 @@ export async function demux(input: Readable) {
             cleanup();
             throw new Error(`Audio codec ${codecName} is not allowed`);
         }
+        const codecpar = await libav.ff_copyout_codecpar(aStream.codecpar);
         aInfo = {
             index: aStream.index,
             codec: aStream.codec_id,
-            codecpar: aStream.codecpar,
-            sample_rate: await libav.AVCodecParameters_sample_rate(aStream.codecpar),
+            codecpar,
+            sample_rate: codecpar.sample_rate ?? 0
         }
         loggerFormat.info({
             info: aInfo

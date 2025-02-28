@@ -2,7 +2,7 @@ import { AV_PIX_FMT_RGBA, AVMEDIA_TYPE_VIDEO } from "@lng2004/libav.js-variant-w
 import { libavInstance } from "./LibavInstance.js";
 import type LibAV from "@lng2004/libav.js-variant-webcodecs-avf-with-decoders";
 
-export async function createDecoder(id: number, codecpar: number)
+export async function createDecoder(id: number, codecpar: LibAV.CodecParameters)
 {
     let freed = false;
     let serializer: Promise<unknown> | null = null
@@ -26,7 +26,7 @@ export async function createDecoder(id: number, codecpar: number)
     const [, c, pkt, frame] = await libav.ff_init_decoder(id, {
         codecpar
     });
-    const { width, height, format } = await libav.ff_copyout_codecpar(codecpar);
+    const { width, height, format } = codecpar;
     const [graph, src_ctx, sink_ctx] = await libav.ff_init_filter_graph(
         "format=pix_fmts=rgba",
         {
