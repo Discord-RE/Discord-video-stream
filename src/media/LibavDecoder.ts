@@ -9,7 +9,7 @@ export async function createDecoder(id: number, codecpar: number)
         codecpar
     });
     const [, src_ctx, sink_ctx] = await libav.ff_init_filter_graph(
-        "format=rgba", {}, {}
+        "format=pix_fmts=rgba", {}, {}
     );
     return {
         decode: (packets: (LibAV.Packet | number)[]) => {
