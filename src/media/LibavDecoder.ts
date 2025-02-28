@@ -51,6 +51,7 @@ export async function createDecoder(id: number, codecpar: number)
         },
         free: () => {
             libav.ff_free_decoder(c, pkt, frame);
+            libav.avfilter_graph_free(graph);
         }
     }
 }
