@@ -9,18 +9,19 @@ export async function createDecoder(id: number, codecpar: number)
     const [, c, pkt, frame] = await libav.ff_init_decoder(id, {
         codecpar
     });
+    const { width, height, format } = await libav.ff_copyout_codecpar(codecpar);
     const [graph, src_ctx, sink_ctx] = await libav.ff_init_filter_graph(
         "format=pix_fmts=rgba",
         {
             type: AVMEDIA_TYPE_VIDEO,
-            width: await libav.AVCodecParameters_width(codecpar),
-            height: await libav.AVCodecParameters_height(codecpar),
-            pix_fmt: await libav.AVCodecParameters_format(codecpar),
+            width: width ?? 0,
+            height: height ?? 0,
+            pix_fmt: format ?? 0
         },
         {
             type: AVMEDIA_TYPE_VIDEO,
-            width: await libav.AVCodecParameters_width(codecpar),
-            height: await libav.AVCodecParameters_height(codecpar),
+            width: width ?? 0,
+            height: height ?? 0,
             pix_fmt: AV_PIX_FMT_RGBA
         }
     );
