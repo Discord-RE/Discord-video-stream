@@ -471,7 +471,7 @@ export async function playStream(
             const updatePreview = pDebounce.promise(async (packet: LibAV.Packet) => {
                 if (!(packet.flags !== undefined && packet.flags & LibAV.AV_PKT_FLAG_KEY))
                     return;
-                const [frame] = await decoder.decode([packet]);
+                const [frame] = await decoder.decode([packet]).catch(() => []);
                 if (!frame)
                     return;
 

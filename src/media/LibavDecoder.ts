@@ -4,7 +4,23 @@ import type LibAV from "@lng2004/libav.js-variant-webcodecs-avf-with-decoders";
 
 export async function createDecoder(id: number, codecpar: number)
 {
-    let serializer = Promise.resolve([] as LibAV.Frame[]);
+    let serializer: Promise<unknown> | null = null
+    const serialize = <T>(f: () => Promise<T>) => {
+        let p: Promise<T>;
+        if (serializer)
+        {
+            p = serializer.catch(() => {}).then(() => f());
+        }
+        else
+        {
+            p = f();
+        }
+        serializer = p = p.finally(() => {
+            if (serializer === p)
+                serializer = null;
+        });
+        return p;
+    }
     const libav = await libavInstance;
     const [, c, pkt, frame] = await libav.ff_init_decoder(id, {
         codecpar
@@ -27,12 +43,11 @@ export async function createDecoder(id: number, codecpar: number)
     );
     return {
         decode: (packets: (LibAV.Packet | number)[]) => {
-            serializer = serializer.then(
+            return serialize(
                 () => libav.ff_decode_filter_multi(
                     c, src_ctx, sink_ctx, pkt, frame, packets, { ignoreErrors: true }
                 )
             )
-            return serializer;
         },
         free: () => {
             libav.ff_free_decoder(c, pkt, frame);
