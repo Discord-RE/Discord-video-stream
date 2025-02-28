@@ -43,7 +43,7 @@ export async function createDecoder(id: number, codecpar: number)
         }
     );
     return {
-        decode: (packets: (LibAV.Packet | number)[]) => {
+        decode: async (packets: (LibAV.Packet | number)[]) => {
             if (freed)
                 return [];
             return serialize(
