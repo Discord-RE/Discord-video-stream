@@ -1,6 +1,5 @@
 import pDebounce from "p-debounce";
 import LibAV, { type CodecParameters } from "@lng2004/libav.js-variant-webcodecs-avf-with-decoders";
-import { libavInstance } from "./LibavInstance.js";
 import { Log } from "debug-level";
 import { uid } from "uid";
 import { AVCodecID } from "./LibavCodecId.js";
@@ -180,13 +179,14 @@ function h265AddParamSets(frame: Buffer, paramSets: H265ParamSets) {
 }
 
 const idToStream = new Map<string, Readable>();
+const libavInstance = LibAV.LibAV();
 libavInstance.then((libav) => {
     libav.onread = (id) => {
         idToStream.get(id)?.resume();
     }
 })
 
-export async function demux(input: Readable) {
+export async function demux(input: Readable, cancelSignal?: AbortSignal) {
     const loggerInput = new Log("demux:input");
     const loggerFormat = new Log("demux:format");
     const loggerFrameCommon = new Log("demux:frame:common");

@@ -1,9 +1,11 @@
 import { AV_PIX_FMT_RGBA, AVMEDIA_TYPE_VIDEO } from "@lng2004/libav.js-variant-webcodecs-avf-with-decoders";
-import { libavInstance } from "./LibavInstance.js";
-import type LibAV from "@lng2004/libav.js-variant-webcodecs-avf-with-decoders";
+import LibAV from "@lng2004/libav.js-variant-webcodecs-avf-with-decoders";
+
+let libavInstance: Promise<LibAV.LibAV>;
 
 export async function createDecoder(id: number, codecpar: LibAV.CodecParameters)
 {
+    libavInstance ??= LibAV.LibAV({ yesthreads: true });
     let freed = false;
     let serializer: Promise<unknown> | null = null
     const serialize = <T>(f: () => Promise<T>) => {
