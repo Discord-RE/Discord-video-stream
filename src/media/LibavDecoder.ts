@@ -56,9 +56,12 @@ export async function createDecoder(id: number, codecpar: LibAV.CodecParameters)
         },
         free: () => {
             freed = true;
+            serialize(() => libav.ff_decode_filter_multi(
+                c, src_ctx, sink_ctx, pkt, frame, [], { fin: true, ignoreErrors: true }
+            ));
             return serialize(async() => {
                 libav.ff_free_decoder(c, pkt, frame);
-                libav.avfilter_graph_free(graph);  
+                libav.avfilter_graph_free_js(graph);  
             });
         }
     }
