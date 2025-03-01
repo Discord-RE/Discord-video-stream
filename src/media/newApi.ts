@@ -1,12 +1,19 @@
 import ffmpeg from 'fluent-ffmpeg';
+import pDebounce from 'p-debounce';
+import sharp from 'sharp';
+import Log from 'debug-level';
 import { demux } from './LibavDemuxer.js';
+import { setTimeout as delay } from 'node:timers/promises';
 import { PassThrough, type Readable } from "node:stream";
-import type { SupportedVideoCodec } from '../utils.js';
-import type { MediaUdp, Streamer } from '../client/index.js';
 import { VideoStream } from './VideoStream.js';
 import { AudioStream } from './AudioStream.js';
 import { isFiniteNonZero } from '../utils.js';
 import { AVCodecID } from './LibavCodecId.js';
+import { createDecoder } from './LibavDecoder.js';
+
+import LibAV from '@lng2004/libav.js-variant-webcodecs-avf-with-decoders';
+import type { SupportedVideoCodec } from '../utils.js';
+import type { MediaUdp, Streamer } from '../client/index.js';
 
 export type EncoderOptions = {
     /**
@@ -338,6 +345,11 @@ export type PlayStreamOptions = {
      * See https://ffmpeg.org/ffmpeg.html#:~:text=%2Dreadrate_initial_burst
      */
     readrateInitialBurst: number | undefined,
+
+    /**
+     * Enable stream preview from input stream (experimental)
+     */
+    streamPreview: boolean,
 }
 
 export async function playStream(
@@ -346,16 +358,19 @@ export async function playStream(
     cancelSignal?: AbortSignal
 )
 {
+    const logger = new Log("playStream");
     cancelSignal?.throwIfAborted();
     if (!streamer.voiceConnection)
         throw new Error("Bot is not connected to a voice channel");
 
+    logger.debug("Initializing demuxer");
     const { video, audio } = await demux(input);
     cancelSignal?.throwIfAborted();
 
     if (!video)
         throw new Error("No video stream in media");
 
+    const cleanupFuncs: (() => unknown)[] = [];
     const videoCodecMap: Record<number, SupportedVideoCodec> = {
         [AVCodecID.AV_CODEC_ID_H264]: "H264",
         [AVCodecID.AV_CODEC_ID_H265]: "H265",
@@ -369,6 +384,7 @@ export async function playStream(
         height: video.height,
         frameRate: video.framerate_num / video.framerate_den,
         readrateInitialBurst: undefined,
+        streamPreview: false,
     } satisfies PlayStreamOptions;
 
     function mergeOptions(opts: Partial<PlayStreamOptions>)
@@ -397,10 +413,14 @@ export async function playStream(
                 isFiniteNonZero(opts.readrateInitialBurst) && opts.readrateInitialBurst > 0
                     ? opts.readrateInitialBurst
                     : defaultOptions.readrateInitialBurst,
+
+            streamPreview:
+                opts.streamPreview ?? defaultOptions.streamPreview,
         } satisfies PlayStreamOptions
     }
 
     const mergedOptions = mergeOptions(options);
+    logger.debug({ options: mergedOptions }, "Merged options");
 
     let udp: MediaUdp;
     let stopStream: () => unknown;
@@ -447,11 +467,63 @@ export async function playStream(
             vStream.on("pts", stopBurst);
         }
     }
+    if (mergedOptions.streamPreview && mergedOptions.type === "go-live")
+    {
+        (async () => {
+            const logger = new Log("playStream:preview");
+            logger.debug("Initializing decoder for stream preview");
+            const decoder = await createDecoder(video.codec, video.codecpar);
+            if (!decoder)
+            {
+                logger.warn("Failed to initialize decoder. Stream preview will be disabled");
+                return;
+            }
+            cleanupFuncs.push(() => {
+                logger.debug("Freeing decoder");
+                decoder.free();
+            });
+            const updatePreview = pDebounce.promise(async (packet: LibAV.Packet) => {
+                if (!(packet.flags !== undefined && packet.flags & LibAV.AV_PKT_FLAG_KEY))
+                    return;
+                const decodeStart = performance.now();
+                const [frame] = await decoder.decode([packet]).catch(() => []);
+                if (!frame)
+                    return;
+                const decodeEnd = performance.now();
+                logger.debug(`Decoding a frame took ${decodeEnd - decodeStart}ms`);
+
+                return Promise.all([
+                    delay(5000),
+                    sharp(frame.data, {
+                        raw: {
+                            width: frame.width ?? 0,
+                            height: frame.height ?? 0,
+                            channels: 4
+                        }
+                    })
+                    .resize(1000)
+                    .jpeg()
+                    .toBuffer()
+                    .then(image => streamer.setStreamPreview(image))
+                ]);
+            });
+            video.stream.on("data", updatePreview);
+            cleanupFuncs.push(() => video.stream.off("data", updatePreview));
+        })();
+    }
     return new Promise<void>((resolve, reject) => {
-        const cleanup = () => {
+        cleanupFuncs.push(() => {
             stopStream();
             udp.mediaConnection.setSpeaking(false);
             udp.mediaConnection.setVideoAttributes(false);
+        });
+        let cleanedUp = false;
+        const cleanup = () => {
+            if (cleanedUp)
+                return;
+            cleanedUp = true;
+            for (const f of cleanupFuncs)
+                f();
         }
         cancelSignal?.addEventListener("abort", () => {
             cleanup();
