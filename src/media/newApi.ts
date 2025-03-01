@@ -478,7 +478,10 @@ export async function playStream(
                 logger.warn("Failed to initialize decoder. Stream preview will be disabled");
                 return;
             }
-            cleanupFuncs.push(() => decoder.free());
+            cleanupFuncs.push(() => {
+                logger.debug("Freeing decoder");
+                decoder.free();
+            });
             const updatePreview = pDebounce.promise(async (packet: LibAV.Packet) => {
                 if (!(packet.flags !== undefined && packet.flags & LibAV.AV_PKT_FLAG_KEY))
                     return;
