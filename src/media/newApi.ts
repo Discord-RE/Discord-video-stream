@@ -517,7 +517,11 @@ export async function playStream(
             udp.mediaConnection.setSpeaking(false);
             udp.mediaConnection.setVideoAttributes(false);
         });
+        let cleanedUp = false;
         const cleanup = () => {
+            if (cleanedUp)
+                return;
+            cleanedUp = true;
             for (const f of cleanupFuncs)
                 f();
         }
