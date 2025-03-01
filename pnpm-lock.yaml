@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@lng2004/libav.js-variant-webcodecs-avf-with-decoders':
-        specifier: 6.5.7-no-bigint
-        version: 6.5.7-no-bigint
+        specifier: 6.5.7-o3
+        version: 6.5.7-o3
       debug-level:
         specifier: ^3.2.1
         version: 3.2.1
@@ -241,8 +241,8 @@ packages:
     resolution: {integrity: sha512-f5DRIOZf7wxogefH03RjMPMdBF7ADTWUMoOs9kaJo06EfwF+aFhMZMDZxHg/Xe12hptN9xoZjGso2fdjapBRIA==}
     engines: {node: '>=10'}
 
-  '@lng2004/libav.js-variant-webcodecs-avf-with-decoders@6.5.7-no-bigint':
-    resolution: {integrity: sha512-0+YfQVEGVYNUMkW2/hc8yxlTasH33CFOOlp9Ziy3DAxUuzxb67jk5i9GP7P4PqShsRTSeks+fYQhPegi4+8Jzg==}
+  '@lng2004/libav.js-variant-webcodecs-avf-with-decoders@6.5.7-o3':
+    resolution: {integrity: sha512-JAMdrXIEH4SHevJ44r4lXEdIRvINgij0rKiJLfnzwig1wSXQmcLDmWYDAQ0qefcjuqj9Bt8rswgrKDAT4GV97g==}
 
   '@lukeed/csprng@1.1.0':
     resolution: {integrity: sha512-Z7C/xXCiGWsg0KuKsHTKJxbWhpI3Vs5GwLfOean7MGyVFGqdRgBbAjOCh6u4bbjPc/8MJ2pZmK/0DLdCbivLDA==}
@@ -962,7 +962,7 @@ snapshots:
       string-argv: 0.3.2
       type-detect: 4.1.0
 
-  '@lng2004/libav.js-variant-webcodecs-avf-with-decoders@6.5.7-no-bigint': {}
+  '@lng2004/libav.js-variant-webcodecs-avf-with-decoders@6.5.7-o3': {}
 
   '@lukeed/csprng@1.1.0': {}
 
