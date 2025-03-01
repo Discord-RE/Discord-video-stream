@@ -1,6 +1,7 @@
 import ffmpeg from 'fluent-ffmpeg';
 import pDebounce from 'p-debounce';
 import sharp from 'sharp';
+import Log from 'debug-level';
 import { demux } from './LibavDemuxer.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { PassThrough, type Readable } from "node:stream";
@@ -357,10 +358,12 @@ export async function playStream(
     cancelSignal?: AbortSignal
 )
 {
+    const logger = new Log("playStream");
     cancelSignal?.throwIfAborted();
     if (!streamer.voiceConnection)
         throw new Error("Bot is not connected to a voice channel");
 
+    logger.debug("Initializing demuxer");
     const { video, audio } = await demux(input);
     cancelSignal?.throwIfAborted();
 
@@ -417,6 +420,7 @@ export async function playStream(
     }
 
     const mergedOptions = mergeOptions(options);
+    logger.debug({ options: mergedOptions }, "Merged options");
 
     let udp: MediaUdp;
     let stopStream: () => unknown;
@@ -466,14 +470,24 @@ export async function playStream(
     if (mergedOptions.streamPreview && mergedOptions.type === "go-live")
     {
         (async () => {
+            const logger = new Log("playStream:preview");
+            logger.debug("Initializing decoder for stream preview");
             const decoder = await createDecoder(video.codec, video.codecpar);
+            if (!decoder)
+            {
+                logger.warn("Failed to initialize decoder. Stream preview will be disabled");
+                return;
+            }
             cleanupFuncs.push(() => decoder.free());
             const updatePreview = pDebounce.promise(async (packet: LibAV.Packet) => {
                 if (!(packet.flags !== undefined && packet.flags & LibAV.AV_PKT_FLAG_KEY))
                     return;
+                const decodeStart = performance.now();
                 const [frame] = await decoder.decode([packet]).catch(() => []);
                 if (!frame)
                     return;
+                const decodeEnd = performance.now();
+                logger.debug(`Decoding a frame took ${decodeEnd - decodeStart}ms`);
 
                 return Promise.all([
                     delay(5000),

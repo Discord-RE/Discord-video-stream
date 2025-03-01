@@ -3,8 +3,22 @@ import LibAV from "@lng2004/libav.js-variant-webcodecs-avf-with-decoders";
 
 let libavInstance: Promise<LibAV.LibAV>;
 
+// @ts-expect-error
+const isDeno = typeof Deno !== "undefined";
+// @ts-expect-error
+const isBun = typeof Bun !== "undefined";
+
 export async function createDecoder(id: number, codecpar: LibAV.CodecParameters)
 {
+    if (isDeno || isBun)
+    {
+        console.error(
+            "The decoder currently doesn't work with Deno and Bun, due to " +
+            "various issues with Emscripten's pthread support leading to "  +
+            "crashes. The decoder will not be initialized"
+        );
+        return null;
+    }
     libavInstance ??= LibAV.LibAV({ yesthreads: true });
     let freed = false;
     let serializer: Promise<unknown> | null = null
