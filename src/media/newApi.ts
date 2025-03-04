@@ -493,7 +493,7 @@ export async function playStream(
                 logger.debug(`Decoding a frame took ${decodeEnd - decodeStart}ms`);
 
                 return Promise.all([
-                    delay(5000),
+                    delay(15000),
                     sharp(frame.data, {
                         raw: {
                             width: frame.width ?? 0,
@@ -501,7 +501,7 @@ export async function playStream(
                             channels: 4
                         }
                     })
-                    .resize(1000)
+                    .resize(1024, 576, { fit: "inside" })
                     .jpeg()
                     .toBuffer()
                     .then(image => streamer.setStreamPreview(image))
