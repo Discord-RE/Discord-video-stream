@@ -56,7 +56,6 @@ export class Streamer {
     }
 
     public sendOpcode(code: number, data: unknown): void {
-        // @ts-expect-error Please make this public
         this.client.ws.broadcast({
             op: code,
             d: data,
@@ -157,21 +156,11 @@ export class Streamer {
     public async setStreamPreview(image: Buffer): Promise<void> {
         if (!this.client.token)
             throw new Error("Please login :)");
-        if (!this.voiceConnection?.streamConnection)
+        if (!this.voiceConnection?.streamConnection?.serverId)
             return;
-        const { streamKey } = this.voiceConnection.streamConnection;
+        const { serverId } = this.voiceConnection.streamConnection;
         const data = `data:image/jpeg;base64,${image.toString("base64")}`;
-
-        await fetch(`https://discord.com/api/v9/streams/${streamKey}/preview`, {
-            method: "POST",
-            headers: {
-                'Authorization': this.client.token,
-                'Content-Type': 'application/json',
-                // Do we need this? Can we get user agent from the client itself?
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0'
-            },
-            body: JSON.stringify({ thumbnail: data })
-        });
+        (await this.client.guilds.fetch(serverId)).members.me?.voice.postPreview(data);
     }
 
     public stopStream(): void {

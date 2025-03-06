@@ -27,12 +27,13 @@
         "@types/fluent-ffmpeg": "^2.1.27",
         "@types/node": "^20.17.1",
         "@types/ws": "^8.5.12",
+        "discord.js-selfbot-v13": "^3.6.0",
         "pkg-pr-new": "^0.0.39",
         "typed-emitter": "^2.1.0",
         "typescript": "^5.6.3"
     },
     "peerDependencies": {
-        "discord.js-selfbot-v13": "3.x"
+        "discord.js-selfbot-v13": "^3.6.0"
     },
     "engines": {
         "node": ">=21.0.0"

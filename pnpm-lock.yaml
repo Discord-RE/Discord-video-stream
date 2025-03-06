@@ -14,9 +14,6 @@ importers:
       debug-level:
         specifier: ^3.2.1
         version: 3.2.1
-      discord.js-selfbot-v13:
-        specifier: 3.x
-        version: 3.5.1
       fluent-ffmpeg:
         specifier: ^2.1.3
         version: 2.1.3
@@ -48,6 +45,9 @@ importers:
       '@types/ws':
         specifier: ^8.5.12
         version: 8.5.14
+      discord.js-selfbot-v13:
+        specifier: ^3.6.0
+        version: 3.6.0
       pkg-pr-new:
         specifier: ^0.0.39
         version: 0.0.39
@@ -435,8 +435,8 @@ packages:
   discord-api-types@0.37.117:
     resolution: {integrity: sha512-d+Z6RKd7v3q22lsil7yASucqMfVVV0s0XSqu3cw7kyHVXiDO/mAnqMzqma26IYnIm2mk3TlupYJDGrdL908ZKA==}
 
-  discord.js-selfbot-v13@3.5.1:
-    resolution: {integrity: sha512-AG4bYnymw8Ji0fsjVKG0f3gKoH/xuGTKn2TpxGtLhmiL8JwYywsoF7IFQ/Cl3avOPY+MKmeaR0JNScImQvG0tw==}
+  discord.js-selfbot-v13@3.6.0:
+    resolution: {integrity: sha512-gGb18FblMt2e2pwhKMSLKqDLPw2yG3IbTNoZJKeMV9hJCivjn8gcqfhwhRbSHq0DNfDrKLjvCWY08/X8rIWnEA==}
     engines: {node: '>=18.17'}
 
   emoji-regex@8.0.0:
@@ -1159,7 +1159,7 @@ snapshots:
 
   discord-api-types@0.37.117: {}
 
-  discord.js-selfbot-v13@3.5.1:
+  discord.js-selfbot-v13@3.6.0:
     dependencies:
       '@discordjs/builders': 1.10.0
       '@discordjs/collection': 1.5.3
