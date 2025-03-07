@@ -156,11 +156,11 @@ export class Streamer {
     public async setStreamPreview(image: Buffer): Promise<void> {
         if (!this.client.token)
             throw new Error("Please login :)");
-        if (!this.voiceConnection?.streamConnection?.serverId)
+        if (!this.voiceConnection?.streamConnection?.guildId)
             return;
         const data = `data:image/jpeg;base64,${image.toString("base64")}`;
-        const { serverId } = this.voiceConnection.streamConnection;
-        const server = await this.client.guilds.fetch(serverId);
+        const { guildId } = this.voiceConnection.streamConnection;
+        const server = await this.client.guilds.fetch(guildId);
         await server.members.me?.voice.postPreview(data);
     }
 
