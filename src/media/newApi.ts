@@ -503,6 +503,7 @@ export async function playStream(
                 .jpeg()
                 .toBuffer()
                 .then(image => streamer.setStreamPreview(image))
+                .catch(() => {});
             });
             video.stream.on("data", updatePreview);
             cleanupFuncs.push(() => video.stream.off("data", updatePreview));
