@@ -158,9 +158,10 @@ export class Streamer {
             throw new Error("Please login :)");
         if (!this.voiceConnection?.streamConnection?.serverId)
             return;
-        const { serverId } = this.voiceConnection.streamConnection;
         const data = `data:image/jpeg;base64,${image.toString("base64")}`;
-        (await this.client.guilds.fetch(serverId)).members.me?.voice.postPreview(data);
+        const { serverId } = this.voiceConnection.streamConnection;
+        const server = await this.client.guilds.fetch(serverId);
+        await server.members.me?.voice.postPreview(data);
     }
 
     public stopStream(): void {
