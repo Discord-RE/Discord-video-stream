@@ -492,20 +492,17 @@ export async function playStream(
                 const decodeEnd = performance.now();
                 logger.debug(`Decoding a frame took ${decodeEnd - decodeStart}ms`);
 
-                return Promise.all([
-                    delay(15000),
-                    sharp(frame.data, {
-                        raw: {
-                            width: frame.width ?? 0,
-                            height: frame.height ?? 0,
-                            channels: 4
-                        }
-                    })
-                    .resize(1024, 576, { fit: "inside" })
-                    .jpeg()
-                    .toBuffer()
-                    .then(image => streamer.setStreamPreview(image))
-                ]);
+                return sharp(frame.data, {
+                    raw: {
+                        width: frame.width ?? 0,
+                        height: frame.height ?? 0,
+                        channels: 4
+                    }
+                })
+                .resize(1024, 576, { fit: "inside" })
+                .jpeg()
+                .toBuffer()
+                .then(image => streamer.setStreamPreview(image))
             });
             video.stream.on("data", updatePreview);
             cleanupFuncs.push(() => video.stream.off("data", updatePreview));
