@@ -56,7 +56,6 @@ export class Streamer {
     }
 
     public sendOpcode(code: number, data: unknown): void {
-        // @ts-expect-error Please make this public
         this.client.ws.broadcast({
             op: code,
             d: data,
@@ -152,6 +151,17 @@ export class Streamer {
                 streamConn.setTokens(d.endpoint, d.token);
             })
         });
+    }
+
+    public async setStreamPreview(image: Buffer): Promise<void> {
+        if (!this.client.token)
+            throw new Error("Please login :)");
+        if (!this.voiceConnection?.streamConnection?.guildId)
+            return;
+        const data = `data:image/jpeg;base64,${image.toString("base64")}`;
+        const { guildId } = this.voiceConnection.streamConnection;
+        const server = await this.client.guilds.fetch(guildId);
+        await server.members.me?.voice.postPreview(data);
     }
 
     public stopStream(): void {

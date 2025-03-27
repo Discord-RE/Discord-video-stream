@@ -3,12 +3,13 @@ import { Streamer, Utils, prepareStream, playStream } from "@dank074/discord-vid
 import config from "./config.json" with {type: "json"};
 
 const streamer = new Streamer(new Client());
-let current: ReturnType<typeof prepareStream>["command"];
 
 // ready event
 streamer.client.on("ready", () => {
-    console.log(`--- ${streamer.client.user.tag} is ready ---`);
+    console.log(`--- ${streamer.client.user?.tag} is ready ---`);
 });
+
+let controller: AbortController;
 
 // message event
 streamer.client.on("messageCreate", async (msg) => {
@@ -18,23 +19,25 @@ streamer.client.on("messageCreate", async (msg) => {
 
     if (!msg.content) return;
 
-    if (msg.content.startsWith(`$play-live`)) {
+    if (msg.content.startsWith("$play-live")) {
         const args = parseArgs(msg.content)
         if (!args) return;
 
-        const channel = msg.author.voice.channel;
+        const channel = msg.author.voice?.channel;
 
         if(!channel) return;
 
         console.log(`Attempting to join voice channel ${msg.guildId}/${channel.id}`);
-        await streamer.joinVoice(msg.guildId, channel.id);
+        await streamer.joinVoice(msg.guildId!, channel.id);
 
         if (channel instanceof StageChannel)
         {
-            await streamer.client.user.voice.setSuppressed(false);
+            await streamer.client.user?.voice?.setSuppressed(false);
         }
 
-        current?.kill("SIGTERM");
+        controller?.abort();
+        controller = new AbortController();
+
         const { command, output } = prepareStream(args.url, {
             width: config.streamOpts.width,
             height: config.streamOpts.height,
@@ -43,32 +46,32 @@ streamer.client.on("messageCreate", async (msg) => {
             bitrateVideoMax: config.streamOpts.maxBitrateKbps,
             hardwareAcceleratedDecoding: config.streamOpts.hardware_acceleration,
             videoCodec: Utils.normalizeVideoCodec(config.streamOpts.videoCodec)
-        })
+        }, controller.signal);
         command.on("error", (err) => {
             console.log("An error happened with ffmpeg");
             console.log(err);
-        })
-        current = command;
-        await playStream(output, streamer)
-            .catch(() => command.kill("SIGTERM"));
-        return;
+        });
+        await playStream(output, streamer, undefined, controller.signal)
+            .catch(() => controller.abort());
     } else if (msg.content.startsWith("$play-cam")) {
         const args = parseArgs(msg.content);
         if (!args) return;
 
-        const channel = msg.author.voice.channel;
+        const channel = msg.author.voice?.channel;
 
         if (!channel) return;
 
         console.log(`Attempting to join voice channel ${msg.guildId}/${channel.id}`);
-        const vc = await streamer.joinVoice(msg.guildId, channel.id);
+        const vc = await streamer.joinVoice(msg.guildId!, channel.id);
 
         if (channel instanceof StageChannel)
         {
-            await streamer.client.user.voice.setSuppressed(false);
+            await streamer.client.user?.voice?.setSuppressed(false);
         }
 
-        current?.kill("SIGTERM");
+        controller?.abort();
+        controller = new AbortController();
+
         const { command, output } = prepareStream(args.url, {
             width: config.streamOpts.width,
             height: config.streamOpts.height,
@@ -77,17 +80,18 @@ streamer.client.on("messageCreate", async (msg) => {
             bitrateVideoMax: config.streamOpts.maxBitrateKbps,
             hardwareAcceleratedDecoding: config.streamOpts.hardware_acceleration,
             videoCodec: Utils.normalizeVideoCodec(config.streamOpts.videoCodec)
-        })
-
-        current = command;
-        await playStream(output, streamer)
-            .catch(() => command.kill("SIGTERM"));
-        return;
+        }, controller.signal)
+        command.on("error", (err) => {
+            console.log("An error happened with ffmpeg");
+            console.log(err);
+        });
+        await playStream(output, streamer, undefined, controller.signal)
+            .catch(() => controller.abort());
     } else if (msg.content.startsWith("$disconnect")) {
-        current?.kill("SIGTERM");
+        controller?.abort();
         streamer.leaveVoice();
     } else if(msg.content.startsWith("$stop-stream")) {
-        current?.kill("SIGTERM");
+        controller?.abort();
     }
 });
 

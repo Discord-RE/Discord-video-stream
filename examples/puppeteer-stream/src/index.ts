@@ -14,8 +14,10 @@ let browser: Awaited<ReturnType<typeof launch>>;
 
 // ready event
 streamer.client.on("ready", () => {
-    console.log(`--- ${streamer.client.user.tag} is ready ---`);
+    console.log(`--- ${streamer.client.user?.tag} is ready ---`);
 });
+
+let controller: AbortController;
 
 // message event
 streamer.client.on("messageCreate", async (msg) => {
@@ -33,25 +35,26 @@ streamer.client.on("messageCreate", async (msg) => {
 
         if (!url) return;
 
-        const channel = msg.author.voice.channel;
+        const channel = msg.author.voice?.channel;
 
         if (!channel) return;
 
         console.log(`Attempting to join voice channel ${msg.guildId}/${channel.id}`);
-        await streamer.joinVoice(msg.guildId, channel.id);
+        await streamer.joinVoice(msg.guildId!, channel.id);
 
         if (channel instanceof StageChannel)
         {
-            await streamer.client.user.voice.setSuppressed(false);
+            await streamer.client.user?.voice?.setSuppressed(false);
         }
 
+        controller?.abort();
+        controller = new AbortController();
         await streamPuppeteer(url, streamer, {
             width: config.streamOpts.width,
             height: config.streamOpts.height
-        });
-        return;
+        }, controller.signal);
     } else if (msg.content.startsWith("$disconnect")) {
-        browser?.close();
+        controller?.abort();
         streamer.leaveVoice();
     } 
 })
@@ -59,7 +62,11 @@ streamer.client.on("messageCreate", async (msg) => {
 // login
 streamer.client.login(config.token);
 
-async function streamPuppeteer(url: string, streamer: Streamer, opts: BrowserOptions) {
+async function streamPuppeteer(url: string, streamer: Streamer, opts: BrowserOptions, cancelSignal?: AbortSignal) {
+    cancelSignal?.throwIfAborted();
+    cancelSignal?.addEventListener("abort", () => {
+        browser.close();
+    }, { once: true });
     browser = await launch({
         defaultViewport: {
             width: opts.width,
@@ -80,7 +87,7 @@ async function streamPuppeteer(url: string, streamer: Streamer, opts: BrowserOpt
             bitrateVideoMax: config.streamOpts.maxBitrateKbps,
             hardwareAcceleratedDecoding: config.streamOpts.hardware_acceleration,
             videoCodec: Utils.normalizeVideoCodec(config.streamOpts.videoCodec)
-        })
+        }, cancelSignal);
         command.on("error", (err, stdout, stderr) => {
             console.log("An error occurred with ffmpeg");
             console.log(err)
@@ -89,7 +96,7 @@ async function streamPuppeteer(url: string, streamer: Streamer, opts: BrowserOpt
         await playStream(output, streamer, {
             // Use this to catch up with ffmpeg
             readrateInitialBurst: 10
-        });
+        }, cancelSignal);
         console.log("Finished playing video");
     } catch (e) {
         console.log(e);

@@ -2,7 +2,7 @@ import { Log } from "debug-level";
 import { setTimeout } from "node:timers/promises";
 import { Writable } from "node:stream";
 import { combineLoHi } from "./utils.js";
-import type { Packet } from "@libav.js/variant-webcodecs";
+import type { Packet } from "@lng2004/libav.js-variant-webcodecs-avf-with-decoders";
 
 export class BaseMediaStream extends Writable {
     private _pts?: number;

@@ -6,7 +6,7 @@
     "types": "dist/index.d.ts",
     "type": "module",
     "dependencies": {
-        "@dank074/discord-video-stream": "https://pkg.pr.new/Discord-RE/Discord-video-stream/@dank074/discord-video-stream@150",
+        "@dank074/discord-video-stream": "^5.0.0",
         "discord.js-selfbot-v13": "^3.5.1"
     },
     "devDependencies": {
