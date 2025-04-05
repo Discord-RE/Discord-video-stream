@@ -1,4 +1,4 @@
-import { AnyChannel, DMChannel, GroupDMChannel, VoiceBasedChannel } from "discord.js-selfbot-v13";
+import type { AnyChannel, DMChannel, GroupDMChannel, VoiceBasedChannel } from "discord.js-selfbot-v13";
 
 export function normalizeVideoCodec(
     codec: string
@@ -43,27 +43,32 @@ export function parseStreamKey(
       }
 {
     const streamKeyArray = streamKey.split(":");
-    if (streamKeyArray.length < 3) throw new Error(`Invalid stream key: Must contain at least 3 elements`); // invalid stream key
-    
+     
     const type = streamKeyArray.shift();
 
     if (type !== "guild" && type !== "call") {
         throw new Error(`Invalid stream key type: ${type}`);
     }
 
+    if ((type === "guild" && streamKeyArray.length < 4) || (type === "call" && streamKey.length < 3)) 
+        throw new Error(`Invalid stream key: ${streamKey}`); // invalid stream key
+   
     let guildId: string | null = null;
     if (type === "guild") {
-        guildId = streamKeyArray.shift()!;
+        guildId = streamKeyArray.shift() ?? null;
     }
-    const channelId = streamKeyArray.shift()!;
-    const userId = streamKeyArray.shift()!;
+    const channelId = streamKeyArray.shift();
+    const userId = streamKeyArray.shift();
 
+    if (!channelId || !userId) {
+        throw new Error(`Invalid stream key: ${streamKey}`);
+    }
     return { type, channelId, guildId, userId };
 }
 
 export function generateStreamKey(guildId: string | null, channelId: string, userId: string): string {
     const type = guildId ? "guild" : "call";
-    const streamKey = `${type}${type === "guild" ? ":" + guildId : ""}:${channelId}:${userId}`;
+    const streamKey = `${type}${type === "guild" ? `:${guildId}` : ""}:${channelId}:${userId}`;
 
     return streamKey;
 }

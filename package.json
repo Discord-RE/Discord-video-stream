@@ -39,7 +39,9 @@
         "node": ">=21.0.0"
     },
     "scripts": {
-        "build": "tsc"
+        "build": "tsc",
+        "lint": "biome lint --error-on-warnings .",
+        "lint:fix": "biome lint --write ."
     },
     "keywords": [
         "discord",
