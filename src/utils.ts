@@ -66,8 +66,7 @@ export function parseStreamKey(
     return { type, channelId, guildId, userId };
 }
 
-export function generateStreamKey(guildId: string | null, channelId: string, userId: string): string {
-    const type = guildId ? "guild" : "call";
+export function generateStreamKey(type: "guild" | "call", guildId: string | null, channelId: string, userId: string): string {
     const streamKey = `${type}${type === "guild" ? `:${guildId}` : ""}:${channelId}:${userId}`;
 
     return streamKey;

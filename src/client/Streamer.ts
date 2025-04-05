@@ -230,17 +230,17 @@ export class Streamer {
         if (!this.voiceConnection)
             return;
         const {
+            type,
             guildId: guild_id,
             channelId: channel_id,
             botId: user_id
         } = this.voiceConnection;
 
-        const type = guild_id ? "guild" : "call";
-        const streamKey = generateStreamKey(guild_id, channel_id, user_id);
+        const streamKey = generateStreamKey(type, guild_id, channel_id, user_id);
 
         this.sendOpcode(GatewayOpCodes.STREAM_CREATE, {
             type,
-            guild_id: type === "guild"? guild_id : null,
+            guild_id,
             channel_id,
             preferred_region: null,
         });
@@ -255,12 +255,13 @@ export class Streamer {
         if (!this.voiceConnection)
             return;
         const {
+            type,
             guildId: guild_id,
             channelId: channel_id,
             botId: user_id
         } = this.voiceConnection;
 
-        const streamKey = generateStreamKey(guild_id, channel_id, user_id);
+        const streamKey = generateStreamKey(type, guild_id, channel_id, user_id);
         this.sendOpcode(GatewayOpCodes.STREAM_DELETE, {
             stream_key: streamKey
         });

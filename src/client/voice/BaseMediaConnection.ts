@@ -105,6 +105,10 @@ export abstract class BaseMediaConnection extends EventEmitter {
 
     public abstract get serverId(): string | null;
 
+    public get type(): "guild" | "call" {
+        return this.guildId ? "guild" : "call";
+    }
+
     public get transportEncryptor() {
         return this._transportEncryptor;
     }
