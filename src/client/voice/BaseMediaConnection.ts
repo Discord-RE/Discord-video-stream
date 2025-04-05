@@ -63,7 +63,7 @@ export const CodecPayloadType = {
 export abstract class BaseMediaConnection extends EventEmitter {
     private interval: NodeJS.Timeout | null = null;
     public udp: MediaUdp;
-    public guildId: string;
+    public guildId: string | null = null;
     public channelId: string;
     public botId: string;
     public ws: WebSocket | null = null;
@@ -80,7 +80,7 @@ export abstract class BaseMediaConnection extends EventEmitter {
 
     constructor(
         streamer: Streamer,
-        guildId: string,
+        guildId: string | null,
         botId: string,
         channelId: string,
         callback: (udp: MediaUdp) => void

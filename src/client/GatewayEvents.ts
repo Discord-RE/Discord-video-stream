@@ -13,6 +13,7 @@ export namespace GatewayEvent {
     export type VoiceServerUpdate = GatewayEventGeneric<
         "VOICE_SERVER_UPDATE", {
             guild_id: string,
+            channel_id?: string,
             endpoint: string,
             token: string
         }
