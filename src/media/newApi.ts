@@ -85,7 +85,13 @@ export type EncoderOptions = {
     /**
      * Custom headers for HTTP requests
      */
-    customHeaders: Record<string, string>
+    customHeaders: Record<string, string>,
+
+    /**
+     * Custom ffmpeg flags/options to pass directly to ffmpeg
+     * These will be added to the command after other options
+     */
+    customFfmpegFlags: string[]
 }
 
 export function prepareStream(
@@ -111,7 +117,8 @@ export function prepareStream(
         customHeaders: {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.3",
             "Connection": "keep-alive",
-        }
+        },
+        customFfmpegFlags: []
     } satisfies EncoderOptions;
 
     function mergeOptions(opts: Partial<EncoderOptions>) {
@@ -162,7 +169,10 @@ export function prepareStream(
     
             customHeaders: {
                 ...defaultOptions.customHeaders, ...opts.customHeaders
-            }
+            },
+
+            customFfmpegFlags:
+                opts.customFfmpegFlags ?? defaultOptions.customFfmpegFlags
         } satisfies EncoderOptions
     }
 
@@ -289,6 +299,11 @@ export function prepareStream(
             .audioFrequency(48000)
             .audioCodec("libopus")
             .audioBitrate(`${bitrateAudio}k`);
+
+    // Add custom ffmpeg flags
+    if (mergedOptions.customFfmpegFlags && mergedOptions.customFfmpegFlags.length > 0) {
+        command.addOptions(mergedOptions.customFfmpegFlags);
+    }
 
     // exit handling
     const promise = new Promise<void>((resolve, reject) => {
