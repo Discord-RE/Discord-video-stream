@@ -20,7 +20,7 @@ export type EncoderOptions = {
      * Disable video transcoding
      * If enabled, all video related settings have no effects, and the input
      * video stream is used as-is.
-     * 
+     *
      * You need to ensure that the video stream has the right properties
      * (keyframe every 1s, B-frames disabled). Failure to do so will result in
      * a glitchy stream, or degraded performance
@@ -86,7 +86,7 @@ export type EncoderOptions = {
      * Custom headers for HTTP requests
      */
     customHeaders: Record<string, string>,
-    seekTime?: number; // <--- ADD THIS LINE
+    seekTime?: number;
 }
 
 export function prepareStream(
@@ -123,45 +123,45 @@ export function prepareStream(
 
             width:
                 isFiniteNonZero(opts.width) ? Math.round(opts.width) : defaultOptions.width,
-    
+
             height:
                 isFiniteNonZero(opts.height) ? Math.round(opts.height) : defaultOptions.height,
-    
+
             frameRate:
                 isFiniteNonZero(opts.frameRate) && opts.frameRate > 0
                     ? opts.frameRate
                     : defaultOptions.frameRate,
-    
+
             videoCodec:
                 opts.videoCodec ?? defaultOptions.videoCodec,
-    
+
             bitrateVideo:
                 isFiniteNonZero(opts.bitrateVideo) && opts.bitrateVideo > 0
                     ? Math.round(opts.bitrateVideo)
                     : defaultOptions.bitrateVideo,
-    
+
             bitrateVideoMax:
                 isFiniteNonZero(opts.bitrateVideoMax) && opts.bitrateVideoMax > 0
                     ? Math.round(opts.bitrateVideoMax)
                     : defaultOptions.bitrateVideoMax,
-    
+
             bitrateAudio:
                 isFiniteNonZero(opts.bitrateAudio) && opts.bitrateAudio > 0
                     ? Math.round(opts.bitrateAudio)
                     : defaultOptions.bitrateAudio,
-    
+
             includeAudio:
                 opts.includeAudio ?? defaultOptions.includeAudio,
-    
+
             hardwareAcceleratedDecoding:
                 opts.hardwareAcceleratedDecoding ?? defaultOptions.hardwareAcceleratedDecoding,
-    
+
             minimizeLatency:
                 opts.minimizeLatency ?? defaultOptions.minimizeLatency,
-    
+
             h26xPreset:
                 opts.h26xPreset ?? defaultOptions.h26xPreset,
-    
+
             customHeaders: {
                 ...defaultOptions.customHeaders, ...opts.customHeaders
             },
@@ -184,13 +184,12 @@ export function prepareStream(
 
     // command creation
     const command = ffmpeg(input)
-        .addOption('-loglevel', '0')
+        .addOption('-loglevel', '0');
 
-
-    if (options.seekTime && options.seekTime > 0) {
-            command.outputOption('-ss', String(options.seekTime)); // Add seek *AFTER* input
-            console.log("newApi got seek command")
+    if (mergedOptions.seekTime && mergedOptions.seekTime > 0) {
+        command.inputOption('-ss', String(mergedOptions.seekTime));
     }
+
     // input options
     const { hardwareAcceleratedDecoding, minimizeLatency, customHeaders } = mergedOptions;
     if (hardwareAcceleratedDecoding)
@@ -200,12 +199,12 @@ export function prepareStream(
         command.addOptions([
             '-fflags nobuffer',
             '-analyzeduration 0'
-        ])
+        ]);
     }
 
     if (isHttpUrl) {
         command.inputOption('-headers',
-            Object.entries(customHeaders).map(([k, v]) => `${k}: ${v}`).join("\r\n")
+            Object.entries(customHeaders).map(([k, v]) => `${k}: ${v}`).join("\\r\\n") // Corrected escape sequence
         );
         if (!isHls) {
             command.inputOptions([
@@ -234,7 +233,7 @@ export function prepareStream(
     }
     else
     {
-        command.videoFilter(`scale=${width}:${height}`)
+        command.videoFilter(`scale=${width}:${height}`);
 
         if (frameRate)
             command.fpsOutput(frameRate);
@@ -250,7 +249,7 @@ export function prepareStream(
         switch (videoCodec) {
             case 'AV1':
                 command
-                    .videoCodec("libsvtav1")
+                    .videoCodec("libsvtav1");
                 break;
             case 'VP8':
                 command
@@ -299,7 +298,6 @@ export function prepareStream(
             .audioCodec("libopus")
             .audioBitrate(`${bitrateAudio}k`);
 
-    // exit handling
     const promise = new Promise<void>((resolve, reject) => {
         command.on("error", (err) => {
             if (cancelSignal?.aborted)
@@ -313,44 +311,45 @@ export function prepareStream(
                 reject(err);
         });
         command.on("end", () => resolve());
-    })
+    });
     promise.catch(() => {});
     cancelSignal?.addEventListener("abort", () => command.kill("SIGTERM"), { once: true });
     command.run();
-    
-    return { command, output, promise }
+
+    return { command, output, promise };
 }
+
 
 export type PlayStreamOptions = {
     /**
-     * Set stream type as "Go Live" or camera stream
+     * Set stream type as \"Go Live\" or camera stream
      */
     type: "go-live" | "camera",
 
     /**
      * Override video width sent to Discord.
-     * 
+     *
      * DO NOT SPECIFY UNLESS YOU KNOW WHAT YOU'RE DOING!
      */
     width: number,
 
     /**
      * Override video height sent to Discord.
-     * 
+     *
      * DO NOT SPECIFY UNLESS YOU KNOW WHAT YOU'RE DOING!
      */
     height: number,
 
     /**
      * Override video frame rate sent to Discord.
-     * 
+     *
      * DO NOT SPECIFY UNLESS YOU KNOW WHAT YOU'RE DOING!
      */
     frameRate: number,
 
     /**
      * Same as ffmpeg's `readrate_initial_burst` command line flag
-     * 
+     *
      * See https://ffmpeg.org/ffmpeg.html#:~:text=%2Dreadrate_initial_burst
      */
     readrateInitialBurst: number | undefined,
@@ -360,7 +359,7 @@ export type PlayStreamOptions = {
      */
     streamPreview: boolean,
     seekTime?: number;
-    customHeaders?: Record<string, string>; // Add customHeaders here
+    customHeaders?: Record<string, string>;
 }
 
 export async function playStream(
@@ -388,7 +387,7 @@ export async function playStream(
         [AVCodecID.AV_CODEC_ID_VP8]: "VP8",
         [AVCodecID.AV_CODEC_ID_VP9]: "VP9",
         [AVCodecID.AV_CODEC_ID_AV1]: "AV1"
-    }
+    };
     const defaultOptions = {
         type: "go-live",
         width: video.width,
@@ -396,7 +395,7 @@ export async function playStream(
         frameRate: video.framerate_num / video.framerate_den,
         readrateInitialBurst: undefined,
         streamPreview: false,
-        seekTime: 0,  // Default seek time
+        seekTime: 0,
         customHeaders: {}
     } satisfies PlayStreamOptions;
 
@@ -429,12 +428,12 @@ export async function playStream(
 
             streamPreview:
                 opts.streamPreview ?? defaultOptions.streamPreview,
-                    
+
             seekTime: opts.seekTime ?? defaultOptions.seekTime,
             customHeaders: {
                         ...defaultOptions.customHeaders, ...opts.customHeaders
             }
-        } satisfies PlayStreamOptions
+        } satisfies PlayStreamOptions;
     }
 
     const mergedOptions = mergeOptions(options);
@@ -449,7 +448,7 @@ export async function playStream(
     }
     else
     {
-        udp = streamer.voiceConnection.udp;
+        udp = streamer.voiceConnection!.udp;
         streamer.signalVideo(true);
         stopStream = () => streamer.signalVideo(false);
     }
@@ -481,7 +480,7 @@ export async function playStream(
                 vStream.sync = aStream.sync = true;
                 vStream.noSleep = aStream.noSleep = false;
                 vStream.off("pts", stopBurst);
-            }
+            };
             vStream.on("pts", stopBurst);
         }
     }
@@ -540,16 +539,37 @@ export async function playStream(
             cleanedUp = true;
             for (const f of cleanupFuncs)
                 f();
-        }
+        };
         cancelSignal?.addEventListener("abort", () => {
             cleanup();
             reject(cancelSignal.reason);
-        }, { once: true })
+        }, { once: true });
         vStream.once("finish", () => {
             if (cancelSignal?.aborted)
                 return;
             cleanup();
             resolve();
         });
-    }).catch(() => {});
+         vStream.once("error", (err) => {
+            if (cancelSignal?.aborted)
+                 return;
+            cleanup();
+            reject(err);
+         });
+         if (audio) {
+             audio.stream.once("error", (err) => {
+                 if (cancelSignal?.aborted)
+                     return;
+                 cleanup();
+                 reject(err);
+             });
+         }
+    }).catch((err) => {
+        if (!cancelSignal?.aborted) {
+             logger.error("Error during playStream:", err);
+        }
+        if (err !== cancelSignal?.reason) {
+             throw err;
+        }
+   });
 }
