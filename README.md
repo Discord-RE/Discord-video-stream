@@ -184,7 +184,12 @@ minimizeLatency?: boolean;
 /**
  * Custom headers for HTTP requests
  */
-customHeaders?: Record<string, string>
+customHeaders?: Record<string, string>;
+/**
+ * Custom ffmpeg flags/options to pass directly to ffmpeg
+ * These will be added to the command after other options
+ */
+customFfmpegFlags?: string[];
 ```
 
 ## `playStream` options available

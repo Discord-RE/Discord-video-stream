@@ -3,9 +3,10 @@ import { VoiceConnection } from "./voice/VoiceConnection.js";
 import { StreamConnection } from "./voice/StreamConnection.js";
 import { GatewayOpCodes } from "./GatewayOpCodes.js";
 import type TypedEmitter from "typed-emitter";
-import type { Client } from 'discord.js-selfbot-v13';
+import type { Client, DMChannel, GroupDMChannel, VoiceBasedChannel } from 'discord.js-selfbot-v13';
 import type { MediaUdp } from "./voice/MediaUdp.js";
 import type { GatewayEvent } from "./GatewayEvents.js";
+import { generateStreamKey, parseStreamKey } from "../utils.js";
 
 type EmitterEvents = {
     [K in GatewayEvent["t"]]: (data: Extract<GatewayEvent, { t: K }>["d"]) => void
@@ -62,7 +63,24 @@ export class Streamer {
         });
     }
 
-    public joinVoice(guild_id: string, channel_id: string): Promise<MediaUdp> {
+    public joinVoiceChannel(channel:  DMChannel | GroupDMChannel | VoiceBasedChannel): Promise<MediaUdp> {
+        let guildId: string | null = null;
+
+        if(channel.type === "GUILD_STAGE_VOICE" || channel.type === "GUILD_VOICE") {
+            guildId = channel.guildId
+        }
+
+        return this.joinVoice(guildId, channel.id);
+    }
+
+    /**
+     * Joins a voice channel and returns a MediaUdp object.
+     * @param guild_id the guild id of the voice channel. If null, it will join a DM voice channel.
+     * @param channel_id the channel id of the voice channel
+     * @returns the MediaUdp object
+     * @throws Error if the client is not logged in
+     */
+    public joinVoice(guild_id: string | null, channel_id: string): Promise<MediaUdp> {
         return new Promise<MediaUdp>((resolve, reject) => {
             if (!this.client.user) {
                 reject("Client not logged in");
@@ -85,6 +103,10 @@ export class Streamer {
             });
             this._gatewayEmitter.on("VOICE_SERVER_UPDATE", (d) => {
                 if (guild_id !== d.guild_id) return;
+                
+                // channel_id is not set for guild voice calls
+                if(d.channel_id && (channel_id !== d.channel_id)) return;
+                
                 voiceConn.setTokens(d.endpoint, d.token);
             })
             this.signalVideo(false);
@@ -125,7 +147,7 @@ export class Streamer {
             );
             this.voiceConnection.streamConnection = streamConn;
             this._gatewayEmitter.on("STREAM_CREATE", (d) => {
-                const [type, guildId, channelId, userId] = d.stream_key.split(":");
+                const { type, channelId, guildId, userId } = parseStreamKey(d.stream_key);
 
                 if (
                     clientGuildId !== guildId ||
@@ -139,7 +161,7 @@ export class Streamer {
                 streamConn.setSession(session_id);
             });
             this._gatewayEmitter.on("STREAM_SERVER_UPDATE", (d) => {
-                const [type, guildId, channelId, userId] = d.stream_key.split(":");
+                const { type, channelId, guildId, userId } = parseStreamKey(d.stream_key);
 
                 if (
                     clientGuildId !== guildId ||
@@ -196,7 +218,7 @@ export class Streamer {
             channelId: channel_id,
         } = this.voiceConnection;
         this.sendOpcode(GatewayOpCodes.VOICE_STATE_UPDATE, {
-            guild_id,
+            guild_id: guild_id,
             channel_id,
             self_mute: false,
             self_deaf: true,
@@ -208,19 +230,23 @@ export class Streamer {
         if (!this.voiceConnection)
             return;
         const {
+            type,
             guildId: guild_id,
             channelId: channel_id,
             botId: user_id
         } = this.voiceConnection;
+
+        const streamKey = generateStreamKey(type, guild_id, channel_id, user_id);
+
         this.sendOpcode(GatewayOpCodes.STREAM_CREATE, {
-            type: "guild",
+            type,
             guild_id,
             channel_id,
             preferred_region: null,
         });
 
         this.sendOpcode(GatewayOpCodes.STREAM_SET_PAUSED, {
-            stream_key: `guild:${guild_id}:${channel_id}:${user_id}`,
+            stream_key: streamKey,
             paused: false,
         });
     }
@@ -229,12 +255,15 @@ export class Streamer {
         if (!this.voiceConnection)
             return;
         const {
+            type,
             guildId: guild_id,
             channelId: channel_id,
             botId: user_id
         } = this.voiceConnection;
+
+        const streamKey = generateStreamKey(type, guild_id, channel_id, user_id);
         this.sendOpcode(GatewayOpCodes.STREAM_DELETE, {
-            stream_key: `guild:${guild_id}:${channel_id}:${user_id}`
+            stream_key: streamKey
         });
     }
 

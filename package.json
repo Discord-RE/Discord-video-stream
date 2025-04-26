@@ -1,6 +1,6 @@
 {
     "name": "@dank074/discord-video-stream",
-    "version": "5.0.0",
+    "version": "5.0.1",
     "description": "Experiment for making video streaming work for discord selfbots",
     "exports": "./dist/index.js",
     "types": "dist/index.d.ts",
@@ -39,7 +39,9 @@
         "node": ">=21.0.0"
     },
     "scripts": {
-        "build": "tsc"
+        "build": "tsc",
+        "lint": "biome lint --error-on-warnings .",
+        "lint:fix": "biome lint --write ."
     },
     "keywords": [
         "discord",

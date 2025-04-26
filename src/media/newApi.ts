@@ -87,6 +87,12 @@ export type EncoderOptions = {
      */
     customHeaders: Record<string, string>,
     seekTime?: number;
+
+    /**
+     * Custom ffmpeg flags/options to pass directly to ffmpeg
+     * These will be added to the command after other options
+     */
+    customFfmpegFlags: string[]
 }
 
 export function prepareStream(
@@ -113,7 +119,8 @@ export function prepareStream(
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.3",
             "Connection": "keep-alive",
         },
-        seekTime: 0
+        seekTime: 0,
+        customFfmpegFlags: []
     } satisfies EncoderOptions;
 
     function mergeOptions(opts: Partial<EncoderOptions>) {
@@ -167,6 +174,8 @@ export function prepareStream(
             },
 
             seekTime: opts.seekTime ?? defaultOptions.seekTime,
+            customFfmpegFlags:
+                opts.customFfmpegFlags ?? defaultOptions.customFfmpegFlags
         } satisfies EncoderOptions
     }
 
@@ -298,6 +307,12 @@ export function prepareStream(
             .audioCodec("libopus")
             .audioBitrate(`${bitrateAudio}k`);
 
+    // Add custom ffmpeg flags
+    if (mergedOptions.customFfmpegFlags && mergedOptions.customFfmpegFlags.length > 0) {
+        command.addOptions(mergedOptions.customFfmpegFlags);
+    }
+
+    // exit handling
     const promise = new Promise<void>((resolve, reject) => {
         command.on("error", (err) => {
             if (cancelSignal?.aborted)
