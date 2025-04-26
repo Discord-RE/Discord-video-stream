@@ -86,6 +86,10 @@ export type EncoderOptions = {
      * Custom headers for HTTP requests
      */
     customHeaders: Record<string, string>,
+
+    /**
+     * Input for seeking time
+     */
     seekTime?: number;
 
     /**
@@ -195,6 +199,7 @@ export function prepareStream(
     const command = ffmpeg(input)
         .addOption('-loglevel', '0');
 
+    // Seeking if applicable
     if (mergedOptions.seekTime && mergedOptions.seekTime > 0) {
         command.inputOption('-ss', String(mergedOptions.seekTime));
     }
