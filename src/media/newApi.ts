@@ -1,5 +1,5 @@
 import ffmpeg from 'fluent-ffmpeg';
-Import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
+import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 import pDebounce from 'p-debounce';
 import sharp from 'sharp';
@@ -136,45 +136,45 @@ export function prepareStream(
 
             width:
                 isFiniteNonZero(opts.width) ? Math.round(opts.width) : defaultOptions.width,
-    
+
             height:
                 isFiniteNonZero(opts.height) ? Math.round(opts.height) : defaultOptions.height,
-    
+
             frameRate:
                 isFiniteNonZero(opts.frameRate) && opts.frameRate > 0
                     ? opts.frameRate
                     : defaultOptions.frameRate,
-    
+
             videoCodec:
                 opts.videoCodec ?? defaultOptions.videoCodec,
-    
+
             bitrateVideo:
                 isFiniteNonZero(opts.bitrateVideo) && opts.bitrateVideo > 0
                     ? Math.round(opts.bitrateVideo)
                     : defaultOptions.bitrateVideo,
-    
+
             bitrateVideoMax:
                 isFiniteNonZero(opts.bitrateVideoMax) && opts.bitrateVideoMax > 0
                     ? Math.round(opts.bitrateVideoMax)
                     : defaultOptions.bitrateVideoMax,
-    
+
             bitrateAudio:
                 isFiniteNonZero(opts.bitrateAudio) && opts.bitrateAudio > 0
                     ? Math.round(opts.bitrateAudio)
                     : defaultOptions.bitrateAudio,
-    
+
             includeAudio:
                 opts.includeAudio ?? defaultOptions.includeAudio,
-    
+
             hardwareAcceleratedDecoding:
                 opts.hardwareAcceleratedDecoding ?? defaultOptions.hardwareAcceleratedDecoding,
-    
+
             minimizeLatency:
                 opts.minimizeLatency ?? defaultOptions.minimizeLatency,
-    
+
             h26xPreset:
                 opts.h26xPreset ?? defaultOptions.h26xPreset,
-    
+
             customHeaders: {
                 ...defaultOptions.customHeaders, ...opts.customHeaders
             },
@@ -331,7 +331,7 @@ export function prepareStream(
     promise.catch(() => {});
     cancelSignal?.addEventListener("abort", () => command.kill("SIGTERM"), { once: true });
     command.run();
-    
+
     return { command, output, promise }
 }
 
@@ -369,18 +369,13 @@ export type PlayStreamOptions = {
      * Enable stream preview from input stream (experimental)
      */
     streamPreview: boolean,
-
-    /**
-     * Set initial mute state for audio.
-     */
-    initialMuted?: boolean, // New option for initial mute state
 }
 
 export async function playStream(
     input: Readable, streamer: Streamer,
     options: Partial<PlayStreamOptions> = {},
     cancelSignal?: AbortSignal
-): Promise<{ audioController?: AudioController; done: Promise<void> }> // Updated return type
+): Promise<{ audioController?: AudioController; done: Promise<void> }>
 {
     const logger = new Log("playStream");
     cancelSignal?.throwIfAborted();
@@ -409,7 +404,6 @@ export async function playStream(
         frameRate: video.framerate_num / video.framerate_den,
         readrateInitialBurst: undefined,
         streamPreview: false,
-        initialMuted: false, // Default to not muted
     } satisfies PlayStreamOptions;
 
     function mergeOptions(opts: Partial<PlayStreamOptions>)
@@ -441,9 +435,6 @@ export async function playStream(
 
             streamPreview:
                 opts.streamPreview ?? defaultOptions.streamPreview,
-            
-            initialMuted:
-                opts.initialMuted ?? defaultOptions.initialMuted, // Merge initialMuted option
         } satisfies PlayStreamOptions
     }
 
@@ -473,13 +464,13 @@ export async function playStream(
 
     const vStream = new VideoStream(udp);
     video.stream.pipe(vStream);
-    
+
     let audioStreamInstance: AudioStream | undefined; // Declare the audio stream instance
 
-    if (audio) // Removed `!mergedOptions.muted` here
+    if (audio)
     {
-        // Pass the initialMuted state to the AudioStream constructor
-        audioStreamInstance = new AudioStream(udp, false, mergedOptions.initialMuted);
+        // No longer passing initialMuted to AudioStream constructor
+        audioStreamInstance = new AudioStream(udp);
         audio.stream.pipe(audioStreamInstance);
         vStream.syncStream = audioStreamInstance;
         audioStreamInstance.syncStream = vStream;
@@ -566,26 +557,11 @@ export async function playStream(
             cleanup();
             resolve();
         });
-         vStream.once("error", (err) => {
-            if (cancelSignal?.aborted)
-                 return;
-            cleanup();
-            reject(err);
-         });
-         if (audio) {
-             audio.stream.once("error", (err) => {
-                 if (cancelSignal?.aborted)
-                     return;
-                 cleanup();
-                 reject(err);
-             });
-         }
-    }).catch((err) => {
-        if (!cancelSignal?.aborted) {
-             logger.error("Error during playStream:", err);
-        }
-        if (err !== cancelSignal?.reason) {
-             throw err;
-        }
-   });
+    }).catch(() => {});
+
+    // Return the promise and the audio controller
+    return {
+        audioController: audioStreamInstance || undefined,
+        done: streamPromise
+    };
 }
