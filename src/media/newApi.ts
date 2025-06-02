@@ -1,4 +1,6 @@
 import ffmpeg from 'fluent-ffmpeg';
+Import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
+ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 import pDebounce from 'p-debounce';
 import sharp from 'sharp';
 import Log from 'debug-level';
@@ -6,7 +8,7 @@ import { demux } from './LibavDemuxer.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { PassThrough, type Readable } from "node:stream";
 import { VideoStream } from './VideoStream.js';
-import { AudioStream } from './AudioStream.js'; // Make sure this import is correct
+import { AudioStream } from './AudioStream.js';
 import { isFiniteNonZero } from '../utils.js';
 import { AVCodecID } from './LibavCodecId.js';
 import { createDecoder } from './LibavDecoder.js';
