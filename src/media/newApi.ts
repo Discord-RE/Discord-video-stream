@@ -6,7 +6,7 @@ import { demux } from './LibavDemuxer.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { PassThrough, type Readable } from "node:stream";
 import { VideoStream } from './VideoStream.js';
-import { AudioStream } from './AudioStream.js';
+import { AudioStream } from './AudioStream.js'; // Make sure this import is correct
 import { isFiniteNonZero } from '../utils.js';
 import { AVCodecID } from './LibavCodecId.js';
 import { createDecoder } from './LibavDecoder.js';
@@ -15,13 +15,19 @@ import LibAV from '@lng2004/libav.js-variant-webcodecs-avf-with-decoders';
 import type { SupportedVideoCodec } from '../utils.js';
 import type { MediaUdp, Streamer } from '../client/index.js';
 
+// Define the AudioController interface here, or in a shared types file
+export interface AudioController {
+    mute(): void;
+    unmute(): void;
+    isMuted(): boolean;
+}
+
 export type EncoderOptions = {
     /**
      * Disable video transcoding
      * If enabled, all video related settings have no effects, and the input
      * video stream is used as-is.
-     * 
-     * You need to ensure that the video stream has the right properties
+     * * You need to ensure that the video stream has the right properties
      * (keyframe every 1s, B-frames disabled). Failure to do so will result in
      * a glitchy stream, or degraded performance
      */
@@ -335,29 +341,25 @@ export type PlayStreamOptions = {
 
     /**
      * Override video width sent to Discord.
-     * 
-     * DO NOT SPECIFY UNLESS YOU KNOW WHAT YOU'RE DOING!
+     * * DO NOT SPECIFY UNLESS YOU KNOW WHAT YOU'RE DOING!
      */
     width: number,
 
     /**
      * Override video height sent to Discord.
-     * 
-     * DO NOT SPECIFY UNLESS YOU KNOW WHAT YOU'RE DOING!
+     * * DO NOT SPECIFY UNLESS YOU KNOW WHAT YOU'RE DOING!
      */
     height: number,
 
     /**
      * Override video frame rate sent to Discord.
-     * 
-     * DO NOT SPECIFY UNLESS YOU KNOW WHAT YOU'RE DOING!
+     * * DO NOT SPECIFY UNLESS YOU KNOW WHAT YOU'RE DOING!
      */
     frameRate: number,
 
     /**
      * Same as ffmpeg's `readrate_initial_burst` command line flag
-     * 
-     * See https://ffmpeg.org/ffmpeg.html#:~:text=%2Dreadrate_initial_burst
+     * * See https://ffmpeg.org/ffmpeg.html#:~:text=%2Dreadrate_initial_burst
      */
     readrateInitialBurst: number | undefined,
 
@@ -365,13 +367,18 @@ export type PlayStreamOptions = {
      * Enable stream preview from input stream (experimental)
      */
     streamPreview: boolean,
+
+    /**
+     * Set initial mute state for audio.
+     */
+    initialMuted?: boolean, // New option for initial mute state
 }
 
 export async function playStream(
     input: Readable, streamer: Streamer,
     options: Partial<PlayStreamOptions> = {},
     cancelSignal?: AbortSignal
-)
+): Promise<{ audioController?: AudioController; done: Promise<void> }> // Updated return type
 {
     const logger = new Log("playStream");
     cancelSignal?.throwIfAborted();
@@ -400,6 +407,7 @@ export async function playStream(
         frameRate: video.framerate_num / video.framerate_den,
         readrateInitialBurst: undefined,
         streamPreview: false,
+        initialMuted: false, // Default to not muted
     } satisfies PlayStreamOptions;
 
     function mergeOptions(opts: Partial<PlayStreamOptions>)
@@ -431,6 +439,9 @@ export async function playStream(
 
             streamPreview:
                 opts.streamPreview ?? defaultOptions.streamPreview,
+            
+            initialMuted:
+                opts.initialMuted ?? defaultOptions.initialMuted, // Merge initialMuted option
         } satisfies PlayStreamOptions
     }
 
@@ -460,23 +471,27 @@ export async function playStream(
 
     const vStream = new VideoStream(udp);
     video.stream.pipe(vStream);
-    if (audio)
+    
+    let audioStreamInstance: AudioStream | undefined; // Declare the audio stream instance
+
+    if (audio) // Removed `!mergedOptions.muted` here
     {
-        const aStream = new AudioStream(udp);
-        audio.stream.pipe(aStream);
-        vStream.syncStream = aStream;
-        aStream.syncStream = vStream;
+        // Pass the initialMuted state to the AudioStream constructor
+        audioStreamInstance = new AudioStream(udp, false, mergedOptions.initialMuted);
+        audio.stream.pipe(audioStreamInstance);
+        vStream.syncStream = audioStreamInstance;
+        audioStreamInstance.syncStream = vStream;
 
         const burstTime = mergedOptions.readrateInitialBurst;
         if (typeof burstTime === "number")
         {
-            vStream.sync = aStream.sync = false;
-            vStream.noSleep = aStream.noSleep = true;
+            vStream.sync = audioStreamInstance.sync = false;
+            vStream.noSleep = audioStreamInstance.noSleep = true;
             const stopBurst = (pts: number) => {
                 if (pts < burstTime * 1000)
                     return;
-                vStream.sync = aStream.sync = true;
-                vStream.noSleep = aStream.noSleep = false;
+                vStream.sync = audioStreamInstance.sync = true;
+                vStream.noSleep = audioStreamInstance.noSleep = false;
                 vStream.off("pts", stopBurst);
             }
             vStream.on("pts", stopBurst);
@@ -524,7 +539,8 @@ export async function playStream(
             cleanupFuncs.push(() => video.stream.off("data", updatePreview));
         })();
     }
-    return new Promise<void>((resolve, reject) => {
+
+    const streamPromise = new Promise<void>((resolve, reject) => {
         cleanupFuncs.push(() => {
             stopStream();
             udp.mediaConnection.setSpeaking(false);
@@ -548,5 +564,26 @@ export async function playStream(
             cleanup();
             resolve();
         });
-    }).catch(() => {});
+         vStream.once("error", (err) => {
+            if (cancelSignal?.aborted)
+                 return;
+            cleanup();
+            reject(err);
+         });
+         if (audio) {
+             audio.stream.once("error", (err) => {
+                 if (cancelSignal?.aborted)
+                     return;
+                 cleanup();
+                 reject(err);
+             });
+         }
+    }).catch((err) => {
+        if (!cancelSignal?.aborted) {
+             logger.error("Error during playStream:", err);
+        }
+        if (err !== cancelSignal?.reason) {
+             throw err;
+        }
+   });
 }
