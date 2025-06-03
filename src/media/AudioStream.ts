@@ -1,13 +1,13 @@
+import type { MediaUdp } from "../client/index.js";
 import { BaseMediaStream } from "./BaseMediaStream.js";
 
 export class AudioStream extends BaseMediaStream {
     public udp: MediaUdp;
-    private _isMuted: boolean; // Internal state for muting
+    private _isMuted = false;
 
-    constructor(udp: MediaUdp, noSleep = false, initialMuted: boolean = false) {
+    constructor(udp: MediaUdp, noSleep = false) {
         super("audio", noSleep);
         this.udp = udp;
-        this._isMuted = initialMuted; // Initialize mute state
     }
 
     /**

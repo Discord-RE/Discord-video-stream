@@ -1,6 +1,4 @@
 import ffmpeg from 'fluent-ffmpeg';
-import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
-ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 import pDebounce from 'p-debounce';
 import sharp from 'sharp';
 import Log from 'debug-level';
@@ -17,8 +15,7 @@ import LibAV from '@lng2004/libav.js-variant-webcodecs-avf-with-decoders';
 import type { SupportedVideoCodec } from '../utils.js';
 import type { MediaUdp, Streamer } from '../client/index.js';
 
-// Define the AudioController interface here, or in a shared types file
-export interface AudioController {
+export interface Controller {
     mute(): void;
     unmute(): void;
     isMuted(): boolean;
@@ -29,7 +26,8 @@ export type EncoderOptions = {
      * Disable video transcoding
      * If enabled, all video related settings have no effects, and the input
      * video stream is used as-is.
-     * * You need to ensure that the video stream has the right properties
+     * 
+     * You need to ensure that the video stream has the right properties
      * (keyframe every 1s, B-frames disabled). Failure to do so will result in
      * a glitchy stream, or degraded performance
      */
@@ -343,25 +341,29 @@ export type PlayStreamOptions = {
 
     /**
      * Override video width sent to Discord.
-     * * DO NOT SPECIFY UNLESS YOU KNOW WHAT YOU'RE DOING!
+     * 
+     * DO NOT SPECIFY UNLESS YOU KNOW WHAT YOU'RE DOING!
      */
     width: number,
 
     /**
      * Override video height sent to Discord.
-     * * DO NOT SPECIFY UNLESS YOU KNOW WHAT YOU'RE DOING!
+     * 
+     * DO NOT SPECIFY UNLESS YOU KNOW WHAT YOU'RE DOING!
      */
     height: number,
 
     /**
      * Override video frame rate sent to Discord.
-     * * DO NOT SPECIFY UNLESS YOU KNOW WHAT YOU'RE DOING!
+     * 
+     * DO NOT SPECIFY UNLESS YOU KNOW WHAT YOU'RE DOING!
      */
     frameRate: number,
 
     /**
      * Same as ffmpeg's `readrate_initial_burst` command line flag
-     * * See https://ffmpeg.org/ffmpeg.html#:~:text=%2Dreadrate_initial_burst
+     * 
+     * See https://ffmpeg.org/ffmpeg.html#:~:text=%2Dreadrate_initial_burst
      */
     readrateInitialBurst: number | undefined,
 
@@ -375,7 +377,7 @@ export async function playStream(
     input: Readable, streamer: Streamer,
     options: Partial<PlayStreamOptions> = {},
     cancelSignal?: AbortSignal
-): Promise<{ audioController?: AudioController; done: Promise<void> }>
+)
 {
     const logger = new Log("playStream");
     cancelSignal?.throwIfAborted();
@@ -465,26 +467,27 @@ export async function playStream(
     const vStream = new VideoStream(udp);
     video.stream.pipe(vStream);
 
-    let audioStreamInstance: AudioStream | undefined; // Declare the audio stream instance
+    let aStream: AudioStream | undefined; // Declare the audio stream instance
 
     if (audio)
     {
-        // No longer passing initialMuted to AudioStream constructor
-        audioStreamInstance = new AudioStream(udp);
-        audio.stream.pipe(audioStreamInstance);
-        vStream.syncStream = audioStreamInstance;
-        audioStreamInstance.syncStream = vStream;
+        aStream = new AudioStream(udp);
+        audio.stream.pipe(aStream);
+        vStream.syncStream = aStream;
+        aStream.syncStream = vStream;
 
         const burstTime = mergedOptions.readrateInitialBurst;
         if (typeof burstTime === "number")
         {
-            vStream.sync = audioStreamInstance.sync = false;
-            vStream.noSleep = audioStreamInstance.noSleep = true;
+            vStream.sync = aStream.sync = false;
+            vStream.noSleep = aStream.noSleep = true;
             const stopBurst = (pts: number) => {
                 if (pts < burstTime * 1000)
                     return;
-                vStream.sync = audioStreamInstance.sync = true;
-                vStream.noSleep = audioStreamInstance.noSleep = false;
+                // biome-ignore lint/style/noNonNullAssertion:
+                vStream.sync = aStream!.sync = true;
+                // biome-ignore lint/style/noNonNullAssertion:
+                vStream.noSleep = vStream!.sync = false;
                 vStream.off("pts", stopBurst);
             }
             vStream.on("pts", stopBurst);
@@ -559,9 +562,19 @@ export async function playStream(
         });
     }).catch(() => {});
 
-    // Return the promise and the audio controller
+    // Return the promise and the controller
     return {
-        audioController: audioStreamInstance || undefined,
+        controller: {
+            mute() {
+                aStream?.mute();
+            },
+            unmute() {
+                aStream?.unmute();
+            },
+            isMuted() {
+                return !!aStream?.isMuted();
+            }
+        } satisfies Controller,
         done: streamPromise
     };
 }
