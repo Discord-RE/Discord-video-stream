@@ -313,7 +313,7 @@ export function prepareStream(
 
     // realtime control mechanism
     const zmqAudio = "tcp://localhost:42069";
-    const zmqAudioClient = new zmq.Request({ immediate: true, sendTimeout: 1000, receiveTimeout: 1000 });
+    const zmqAudioClient = new zmq.Request({ sendTimeout: 5000, receiveTimeout: 5000 });
 
     if (includeAudio)
     {
