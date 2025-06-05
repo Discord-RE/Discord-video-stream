@@ -312,12 +312,16 @@ export function prepareStream(
     }
 
     // realtime control mechanism
-    const zmqEndpoint = "tcp://localhost:42069";
-    command.videoFilter(`zmq=b="${zmqEndpoint}"`);
-    const zmqClient = new zmq.Request({ immediate: true, sendTimeout: 1000, receiveTimeout: 1000 });
-    output.once("data", () => {
-        zmqClient.connect(zmqEndpoint);
-    });
+    const zmqAudio = "tcp://localhost:42069";
+    const zmqAudioClient = new zmq.Request({ immediate: true, sendTimeout: 1000, receiveTimeout: 1000 });
+
+    if (includeAudio)
+    {
+        command.audioFilters(`azmq=b=${zmqAudio.replaceAll(":","\\\\:")}`)
+        output.once("data", () => {
+            zmqAudioClient.connect(zmqAudio);
+        });
+    }
 
     // exit handling
     const promise = new Promise<void>((resolve, reject) => {
@@ -353,8 +357,8 @@ export function prepareStream(
                     return false;
                 try
                 {
-                    await zmqClient.send(`volume@internal_lib volume ${newVolume}`);
-                    const [res] = await zmqClient.receive();
+                    await zmqAudioClient.send(`volume@internal_lib volume ${newVolume}`);
+                    const [res] = await zmqAudioClient.receive();
                     if (res.toString("utf-8") !== "0 Error number 0 occurred")
                         return false;
                     currentVolume = newVolume;
