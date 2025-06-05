@@ -94,6 +94,11 @@ export type EncoderOptions = {
     customFfmpegFlags: string[]
 }
 
+export type Controller = {
+    volume: number,
+    setVolume(newVolume: number): Promise<boolean>
+};
+
 export function prepareStream(
     input: string | Readable,
     options: Partial<EncoderOptions> = {},
@@ -360,7 +365,7 @@ export function prepareStream(
                     return false;
                 }
             }
-        }
+        } satisfies Controller
     }
 }
 
