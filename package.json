@@ -20,7 +20,8 @@
         "sharp": "^0.33.5",
         "sodium-plus": "^0.9.0",
         "uid": "^2.0.2",
-        "ws": "^8.18.0"
+        "ws": "^8.18.0",
+        "zeromq": "^6.4.2"
     },
     "devDependencies": {
         "@biomejs/biome": "^1.9.4",

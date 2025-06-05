@@ -2,9 +2,9 @@ import ffmpeg from 'fluent-ffmpeg';
 import pDebounce from 'p-debounce';
 import sharp from 'sharp';
 import Log from 'debug-level';
-import { demux } from './LibavDemuxer.js';
-import { setTimeout as delay } from 'node:timers/promises';
+import * as zmq from "zeromq";
 import { PassThrough, type Readable } from "node:stream";
+import { demux } from './LibavDemuxer.js';
 import { VideoStream } from './VideoStream.js';
 import { AudioStream } from './AudioStream.js';
 import { isFiniteNonZero } from '../utils.js';
@@ -298,12 +298,21 @@ export function prepareStream(
             .addOutputOption("-lfe_mix_level 1")
             .audioFrequency(48000)
             .audioCodec("libopus")
-            .audioBitrate(`${bitrateAudio}k`);
+            .audioBitrate(`${bitrateAudio}k`)
+            .audioFilters("volume@internal_lib=1.0")
 
     // Add custom ffmpeg flags
     if (mergedOptions.customFfmpegFlags && mergedOptions.customFfmpegFlags.length > 0) {
         command.addOptions(mergedOptions.customFfmpegFlags);
     }
+
+    // realtime control mechanism
+    const zmqEndpoint = "tcp://localhost:42069";
+    command.videoFilter(`zmq=b=${zmqEndpoint}`);
+    const zmqClient = new zmq.Request({ immediate: true, sendTimeout: 1000, receiveTimeout: 1000 });
+    output.once("data", () => {
+        zmqClient.connect(zmqEndpoint);
+    });
 
     // exit handling
     const promise = new Promise<void>((resolve, reject) => {
@@ -323,8 +332,36 @@ export function prepareStream(
     promise.catch(() => {});
     cancelSignal?.addEventListener("abort", () => command.kill("SIGTERM"), { once: true });
     command.run();
-    
-    return { command, output, promise }
+
+    let currentVolume = 1;
+    return {
+        command,
+        output,
+        promise,
+        controller: {
+            get volume() {
+                return currentVolume;
+            },
+            async setVolume(newVolume: number)
+            {
+                if (newVolume < 0)
+                    return false;
+                try
+                {
+                    await zmqClient.send(`volume@internal_lib volume ${newVolume}`);
+                    const [res] = await zmqClient.receive();
+                    if (res.toString("utf-8") !== "0 Error number 0 occurred")
+                        return false;
+                    currentVolume = newVolume;
+                    return true;
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+        }
+    }
 }
 
 export type PlayStreamOptions = {
