@@ -15,12 +15,6 @@ import LibAV from '@lng2004/libav.js-variant-webcodecs-avf-with-decoders';
 import type { SupportedVideoCodec } from '../utils.js';
 import type { MediaUdp, Streamer } from '../client/index.js';
 
-export interface Controller {
-    mute(): void;
-    unmute(): void;
-    isMuted(): boolean;
-}
-
 export type EncoderOptions = {
     /**
      * Disable video transcoding
@@ -134,45 +128,45 @@ export function prepareStream(
 
             width:
                 isFiniteNonZero(opts.width) ? Math.round(opts.width) : defaultOptions.width,
-
+    
             height:
                 isFiniteNonZero(opts.height) ? Math.round(opts.height) : defaultOptions.height,
-
+    
             frameRate:
                 isFiniteNonZero(opts.frameRate) && opts.frameRate > 0
                     ? opts.frameRate
                     : defaultOptions.frameRate,
-
+    
             videoCodec:
                 opts.videoCodec ?? defaultOptions.videoCodec,
-
+    
             bitrateVideo:
                 isFiniteNonZero(opts.bitrateVideo) && opts.bitrateVideo > 0
                     ? Math.round(opts.bitrateVideo)
                     : defaultOptions.bitrateVideo,
-
+    
             bitrateVideoMax:
                 isFiniteNonZero(opts.bitrateVideoMax) && opts.bitrateVideoMax > 0
                     ? Math.round(opts.bitrateVideoMax)
                     : defaultOptions.bitrateVideoMax,
-
+    
             bitrateAudio:
                 isFiniteNonZero(opts.bitrateAudio) && opts.bitrateAudio > 0
                     ? Math.round(opts.bitrateAudio)
                     : defaultOptions.bitrateAudio,
-
+    
             includeAudio:
                 opts.includeAudio ?? defaultOptions.includeAudio,
-
+    
             hardwareAcceleratedDecoding:
                 opts.hardwareAcceleratedDecoding ?? defaultOptions.hardwareAcceleratedDecoding,
-
+    
             minimizeLatency:
                 opts.minimizeLatency ?? defaultOptions.minimizeLatency,
-
+    
             h26xPreset:
                 opts.h26xPreset ?? defaultOptions.h26xPreset,
-
+    
             customHeaders: {
                 ...defaultOptions.customHeaders, ...opts.customHeaders
             },
@@ -329,7 +323,7 @@ export function prepareStream(
     promise.catch(() => {});
     cancelSignal?.addEventListener("abort", () => command.kill("SIGTERM"), { once: true });
     command.run();
-
+    
     return { command, output, promise }
 }
 
@@ -466,12 +460,9 @@ export async function playStream(
 
     const vStream = new VideoStream(udp);
     video.stream.pipe(vStream);
-
-    let aStream: AudioStream | undefined; // Declare the audio stream instance
-
     if (audio)
     {
-        aStream = new AudioStream(udp);
+        const aStream = new AudioStream(udp);
         audio.stream.pipe(aStream);
         vStream.syncStream = aStream;
         aStream.syncStream = vStream;
@@ -484,10 +475,8 @@ export async function playStream(
             const stopBurst = (pts: number) => {
                 if (pts < burstTime * 1000)
                     return;
-                // biome-ignore lint/style/noNonNullAssertion:
-                vStream.sync = aStream!.sync = true;
-                // biome-ignore lint/style/noNonNullAssertion:
-                vStream.noSleep = vStream!.sync = false;
+                vStream.sync = aStream.sync = true;
+                vStream.noSleep = aStream.noSleep = false;
                 vStream.off("pts", stopBurst);
             }
             vStream.on("pts", stopBurst);
@@ -535,8 +524,7 @@ export async function playStream(
             cleanupFuncs.push(() => video.stream.off("data", updatePreview));
         })();
     }
-
-    const streamPromise = new Promise<void>((resolve, reject) => {
+    return new Promise<void>((resolve, reject) => {
         cleanupFuncs.push(() => {
             stopStream();
             udp.mediaConnection.setSpeaking(false);
@@ -561,20 +549,4 @@ export async function playStream(
             resolve();
         });
     }).catch(() => {});
-
-    // Return the promise and the controller
-    return {
-        controller: {
-            mute() {
-                aStream?.mute();
-            },
-            unmute() {
-                aStream?.unmute();
-            },
-            isMuted() {
-                return !!aStream?.isMuted();
-            }
-        } satisfies Controller,
-        done: streamPromise
-    };
 }
