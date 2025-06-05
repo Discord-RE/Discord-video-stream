@@ -133,45 +133,45 @@ export function prepareStream(
 
             width:
                 isFiniteNonZero(opts.width) ? Math.round(opts.width) : defaultOptions.width,
-    
+
             height:
                 isFiniteNonZero(opts.height) ? Math.round(opts.height) : defaultOptions.height,
-    
+
             frameRate:
                 isFiniteNonZero(opts.frameRate) && opts.frameRate > 0
                     ? opts.frameRate
                     : defaultOptions.frameRate,
-    
+
             videoCodec:
                 opts.videoCodec ?? defaultOptions.videoCodec,
-    
+
             bitrateVideo:
                 isFiniteNonZero(opts.bitrateVideo) && opts.bitrateVideo > 0
                     ? Math.round(opts.bitrateVideo)
                     : defaultOptions.bitrateVideo,
-    
+
             bitrateVideoMax:
                 isFiniteNonZero(opts.bitrateVideoMax) && opts.bitrateVideoMax > 0
                     ? Math.round(opts.bitrateVideoMax)
                     : defaultOptions.bitrateVideoMax,
-    
+
             bitrateAudio:
                 isFiniteNonZero(opts.bitrateAudio) && opts.bitrateAudio > 0
                     ? Math.round(opts.bitrateAudio)
                     : defaultOptions.bitrateAudio,
-    
+
             includeAudio:
                 opts.includeAudio ?? defaultOptions.includeAudio,
-    
+
             hardwareAcceleratedDecoding:
                 opts.hardwareAcceleratedDecoding ?? defaultOptions.hardwareAcceleratedDecoding,
-    
+
             minimizeLatency:
                 opts.minimizeLatency ?? defaultOptions.minimizeLatency,
-    
+
             h26xPreset:
                 opts.h26xPreset ?? defaultOptions.h26xPreset,
-    
+
             customHeaders: {
                 ...defaultOptions.customHeaders, ...opts.customHeaders
             },
@@ -313,7 +313,7 @@ export function prepareStream(
 
     // realtime control mechanism
     const zmqEndpoint = "tcp://localhost:42069";
-    command.videoFilter(`zmq=b=${zmqEndpoint}`);
+    command.videoFilter(`zmq=b="${zmqEndpoint}"`);
     const zmqClient = new zmq.Request({ immediate: true, sendTimeout: 1000, receiveTimeout: 1000 });
     output.once("data", () => {
         zmqClient.connect(zmqEndpoint);
