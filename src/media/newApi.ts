@@ -511,17 +511,16 @@ export async function playStream(
         const aStream = new AudioStream(udp);
         audio.stream.pipe(aStream);
         vStream.syncStream = aStream;
-        aStream.syncStream = vStream;
 
         const burstTime = mergedOptions.readrateInitialBurst;
         if (typeof burstTime === "number")
         {
-            vStream.sync = aStream.sync = false;
+            vStream.sync = false;
             vStream.noSleep = aStream.noSleep = true;
             const stopBurst = (pts: number) => {
                 if (pts < burstTime * 1000)
                     return;
-                vStream.sync = aStream.sync = true;
+                vStream.sync = true;
                 vStream.noSleep = aStream.noSleep = false;
                 vStream.off("pts", stopBurst);
             }

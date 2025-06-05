@@ -15,8 +15,8 @@ export class BaseMediaStream extends Writable {
     private _startTime?: number;
     private _startPts?: number;
     private _sync = true;
+    private _syncStream?: BaseMediaStream;
 
-    public syncStream?: BaseMediaStream;
     constructor(type: string, noSleep = false) {
         super({ objectMode: true, highWaterMark: 0 });
         this._loggerSend = new Log(`stream:${type}:send`);
@@ -34,6 +34,15 @@ export class BaseMediaStream extends Writable {
             this._loggerSync.debug("Sync enabled");
         else
             this._loggerSync.debug("Sync disabled");
+    }
+    get syncStream() {
+        return this._syncStream;
+    }
+    set syncStream(stream: BaseMediaStream | undefined)
+    {
+        if (stream !== undefined && this === stream.syncStream)
+            throw new Error("Cannot sync 2 streams with eachother");
+        this._syncStream = stream;
     }
     get noSleep(): boolean {
         return this._noSleep;
@@ -134,7 +143,7 @@ export class BaseMediaStream extends Writable {
                 }, `Stream is ahead. Waiting for ${frametime}ms`);
                 await setTimeout(frametime);
             }
-            while (this.isAhead())
+            while (this.isAhead());
         }
         else
         {
