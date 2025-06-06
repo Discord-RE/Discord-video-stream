@@ -67,19 +67,20 @@ export class BaseMediaStream extends Writable {
     {
         throw new Error("Not implemented");
     }
-    isBehind() {
-        return this.sync
-            && this.pts !== undefined
-            && this.syncStream?.pts !== undefined
-            && this.syncStream.pts - this.pts > this.syncTolerance 
+    private ptsDelta() {
+        if (this.pts !== undefined && this.syncStream?.pts !== undefined)
+            return this.pts - this.syncStream.pts;
+        return undefined;
     }
-    isAhead() {
-        return this.sync
-            && this.pts !== undefined
-            && this.syncStream?.pts !== undefined
-            && this.pts - this.syncStream.pts > this.syncTolerance 
+    private isAhead() {
+        const delta = this.ptsDelta();
+        return delta !== undefined && delta > this.syncTolerance;
     }
-    resetTimingCompensation() {
+    private isBehind() {
+        const delta = this.ptsDelta();
+        return delta !== undefined && delta < -this.syncTolerance;
+    }
+    private resetTimingCompensation() {
         this._startTime = this._startPts = undefined;
     }
     async _write(frame: Packet, _: BufferEncoding, callback: (error?: Error | null) => void) {
@@ -123,7 +124,7 @@ export class BaseMediaStream extends Writable {
         {
             callback(null);
         }
-        else if (this.isBehind())
+        else if (this.sync && this.isBehind())
         {
             this._loggerSync.debug({
                 stats: {
@@ -134,7 +135,7 @@ export class BaseMediaStream extends Writable {
             this.resetTimingCompensation();
             callback(null);
         }
-        else if (this.isAhead())
+        else if (this.sync && this.isAhead())
         {
             do
             {
@@ -147,7 +148,7 @@ export class BaseMediaStream extends Writable {
                 }, `Stream is ahead. Waiting for ${frametime}ms`);
                 await setTimeout(frametime);
             }
-            while (this.isAhead());
+            while (this.sync && this.isAhead());
             this.resetTimingCompensation();
             callback(null);
         }
