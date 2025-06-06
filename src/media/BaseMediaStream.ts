@@ -6,7 +6,7 @@ import type { Packet } from "@lng2004/libav.js-variant-webcodecs-avf-with-decode
 
 export class BaseMediaStream extends Writable {
     private _pts?: number;
-    private _syncTolerance = 5;
+    private _syncTolerance = 20;
     private _loggerSend: Log;
     private _loggerSync: Log;
     private _loggerSleep: Log;
