@@ -1,5 +1,5 @@
 import udpCon from 'node:dgram';
-import { isIPv4 } from 'node:net';
+import { isIP } from 'node:net';
 import { AudioPacketizer } from '../packet/AudioPacketizer.js';
 import {
     VideoPacketizerH264,
@@ -16,7 +16,7 @@ function parseLocalPacket(message: Buffer) {
 
 	const ip = packet.subarray(8, packet.indexOf(0, 8)).toString('utf8');
 
-	if (!isIPv4(ip)) {
+	if (!isIP(ip)) {
 		throw new Error('Malformed IP address');
 	}
 
