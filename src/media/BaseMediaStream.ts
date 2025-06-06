@@ -50,7 +50,7 @@ export class BaseMediaStream extends Writable {
     set noSleep(val: boolean) {
         this._noSleep = val;
         if (!val)
-            this._startPts = this._startTime = undefined;
+            this.resetTimingCompensation();
     }
     get pts(): number | undefined {
         return this._pts;
@@ -78,6 +78,9 @@ export class BaseMediaStream extends Writable {
             && this.pts !== undefined
             && this.syncStream?.pts !== undefined
             && this.pts - this.syncStream.pts > this.syncTolerance 
+    }
+    resetTimingCompensation() {
+        this._startTime = this._startPts = undefined;
     }
     async _write(frame: Packet, _: BufferEncoding, callback: (error?: Error | null) => void) {
         const { data, ptshi, pts, durationhi, duration, time_base_num, time_base_den } = frame;
@@ -128,6 +131,7 @@ export class BaseMediaStream extends Writable {
                     pts_other: this.syncStream?.pts
                 }
             }, "Stream is behind. Not sleeping for this frame");
+            this.resetTimingCompensation();
             callback(null);
         }
         else if (this.isAhead())
@@ -144,6 +148,7 @@ export class BaseMediaStream extends Writable {
                 await setTimeout(frametime);
             }
             while (this.isAhead());
+            this.resetTimingCompensation();
             callback(null);
         }
         else
