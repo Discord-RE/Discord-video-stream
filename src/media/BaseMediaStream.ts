@@ -144,6 +144,7 @@ export class BaseMediaStream extends Writable {
                 await setTimeout(frametime);
             }
             while (this.isAhead());
+            callback(null);
         }
         else
         {
