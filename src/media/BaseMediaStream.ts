@@ -74,11 +74,11 @@ export class BaseMediaStream extends Writable {
     }
     private isAhead() {
         const delta = this.ptsDelta();
-        return delta !== undefined && delta > this.syncTolerance;
+        return this.syncStream?.writableEnded === false && delta !== undefined && delta > this.syncTolerance;
     }
     private isBehind() {
         const delta = this.ptsDelta();
-        return delta !== undefined && delta < -this.syncTolerance;
+        return this.syncStream?.writableEnded === false && delta !== undefined && delta < -this.syncTolerance;
     }
     private resetTimingCompensation() {
         this._startTime = this._startPts = undefined;
