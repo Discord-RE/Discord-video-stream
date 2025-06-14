@@ -10,12 +10,14 @@ import { AudioStream } from './AudioStream.js';
 import { isFiniteNonZero } from '../utils.js';
 import { AVCodecID } from './LibavCodecId.js';
 import { createDecoder } from './LibavDecoder.js';
+import { Encoders } from './encoders/index.js';
 
 import LibAV from '@lng2004/libav.js-variant-webcodecs-avf-with-decoders';
 import type { SupportedVideoCodec } from '../utils.js';
 import type { MediaUdp, Streamer } from '../client/index.js';
+import type { EncoderSettingsGetter } from './encoders/index.js';
 
-export type EncoderOptions = {
+export type PrepareStreamOptions = {
     /**
      * Disable video transcoding
      * If enabled, all video related settings have no effects, and the input
@@ -68,6 +70,13 @@ export type EncoderOptions = {
     includeAudio: boolean,
 
     /**
+     * Functions to get encoder settings
+     * This function will receive the average and max bitrate as the input, and
+     * returns an object containing encoder settings for the supported codecs
+     */
+    encoder: EncoderSettingsGetter
+
+    /**
      * Enable hardware accelerated decoding
      */
     hardwareAcceleratedDecoding: boolean,
@@ -76,11 +85,6 @@ export type EncoderOptions = {
      * Add some options to minimize latency
      */
     minimizeLatency: boolean,
-
-    /**
-     * Preset for x264 and x265
-     */
-    h26xPreset: "ultrafast" | "superfast" | "veryfast" | "faster" | "fast" | "medium" | "slow" | "slower" | "veryslow" | "placebo",
 
     /**
      * Custom headers for HTTP requests
@@ -101,7 +105,7 @@ export type Controller = {
 
 export function prepareStream(
     input: string | Readable,
-    options: Partial<EncoderOptions> = {},
+    options: Partial<PrepareStreamOptions> = {},
     cancelSignal?: AbortSignal
 ) {
     cancelSignal?.throwIfAborted();
@@ -116,17 +120,17 @@ export function prepareStream(
         bitrateVideoMax: 7000,
         bitrateAudio: 128,
         includeAudio: true,
+        encoder: Encoders.software(),
         hardwareAcceleratedDecoding: false,
         minimizeLatency: false,
-        h26xPreset: "ultrafast",
         customHeaders: {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.3",
             "Connection": "keep-alive",
         },
         customFfmpegFlags: []
-    } satisfies EncoderOptions;
+    } satisfies PrepareStreamOptions;
 
-    function mergeOptions(opts: Partial<EncoderOptions>) {
+    function mergeOptions(opts: Partial<PrepareStreamOptions>) {
         return {
             noTranscoding:
                 opts.noTranscoding ?? defaultOptions.noTranscoding,
@@ -160,6 +164,9 @@ export function prepareStream(
                     ? Math.round(opts.bitrateAudio)
                     : defaultOptions.bitrateAudio,
 
+            encoder:
+                opts.encoder ?? defaultOptions.encoder,
+
             includeAudio:
                 opts.includeAudio ?? defaultOptions.includeAudio,
 
@@ -169,16 +176,13 @@ export function prepareStream(
             minimizeLatency:
                 opts.minimizeLatency ?? defaultOptions.minimizeLatency,
 
-            h26xPreset:
-                opts.h26xPreset ?? defaultOptions.h26xPreset,
-
             customHeaders: {
                 ...defaultOptions.customHeaders, ...opts.customHeaders
             },
 
             customFfmpegFlags:
                 opts.customFfmpegFlags ?? defaultOptions.customFfmpegFlags
-        } satisfies EncoderOptions
+        } satisfies PrepareStreamOptions
     }
 
     const mergedOptions = mergeOptions(options);
@@ -230,7 +234,7 @@ export function prepareStream(
 
     // video setup
     const {
-        noTranscoding, width, height, frameRate, bitrateVideo, bitrateVideoMax, videoCodec, h26xPreset
+        noTranscoding, width, height, frameRate, bitrateVideo, bitrateVideoMax, videoCodec, encoder
     } = mergedOptions;
     command.addOutputOption("-map 0:v");
 
@@ -253,40 +257,12 @@ export function prepareStream(
             "-force_key_frames", "expr:gte(t,n_forced*1)"
         ]);
 
-        switch (videoCodec) {
-            case 'AV1':
-                command
-                    .videoCodec("libsvtav1")
-                break;
-            case 'VP8':
-                command
-                    .videoCodec("libvpx")
-                    .outputOption('-deadline', 'realtime');
-                break;
-            case 'VP9':
-                command
-                    .videoCodec("libvpx-vp9")
-                    .outputOption('-deadline', 'realtime');
-                break;
-            case 'H264':
-                command
-                    .videoCodec("libx264")
-                    .outputOptions([
-                        '-tune zerolatency',
-                        `-preset ${h26xPreset}`,
-                        '-profile:v baseline',
-                    ]);
-                break;
-            case 'H265':
-                command
-                    .videoCodec("libx265")
-                    .outputOptions([
-                        '-tune zerolatency',
-                        `-preset ${h26xPreset}`,
-                        '-profile:v main',
-                    ]);
-                break;
-        }
+        const encoderSettings = encoder(bitrateVideo, bitrateVideoMax)[videoCodec];
+        if (!encoderSettings)
+            throw new Error(`Encoder settings not specified for ${videoCodec}`);
+        command
+            .videoCodec(encoderSettings.name)
+            .outputOptions(encoderSettings.options);
     }
 
     // audio setup
