@@ -38,7 +38,7 @@ export const software = ({
             name: "libx265",
             options: [
                 "-forced-idr",
-                `-tune ${x265Tune}`,
+                ...(x265Tune ? [`-tune ${x264Tune}`] : []),
                 `-preset ${x265Preset}`,
             ]
         },
