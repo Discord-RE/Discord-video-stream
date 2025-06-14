@@ -20,7 +20,7 @@ export function nvenc({
         `-preset ${preset}`,
         `-spatial-aq ${spatialAq}`,
         `-temporal-aq ${temporalAq}`,
-        ...[gpu !== undefined ? `-gpu ${gpu}` : ""],
+        ...(gpu !== undefined ? [`-gpu ${gpu}`] : [])
     ]
     return (() => ({
         H264: {
