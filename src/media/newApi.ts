@@ -199,7 +199,7 @@ export function prepareStream(
 
     // command creation
     const command = ffmpeg(input)
-        .addOption('-loglevel', '0')
+        .addOption('-loglevel', 'info')
 
     // input options
     const { hardwareAcceleratedDecoding, minimizeLatency, customHeaders } = mergedOptions;
