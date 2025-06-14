@@ -11,9 +11,10 @@ export type EncoderSettingsGetter = (bitrate: number, bitrateMax: number) => Par
 
 import { software } from "./software.js";
 import { nvenc } from "./nvenc.js";
+import { merge } from "./merge.js";
 
 const Encoders = {
-    software, nvenc
+    software, nvenc, merge
 }
 
 export { Encoders }
