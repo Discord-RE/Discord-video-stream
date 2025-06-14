@@ -1,6 +1,6 @@
 import type { EncoderSettingsGetter } from "./index.js"
 
-type DeepPartial<T> = T extends any[] ? T : { [P in keyof T]?: DeepPartial<T[P]> }
+type DeepPartial<T> = T extends unknown[] ? T : { [P in keyof T]?: DeepPartial<T[P]> }
 type x26xPreset = "ultrafast" | "superfast" | "veryfast" | "faster" | "fast" | "medium" | "slow" | "slower" | "veryslow" | "placebo";
 
 export type SoftwareEncoderSettings = {
