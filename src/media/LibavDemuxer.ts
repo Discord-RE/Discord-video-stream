@@ -166,6 +166,61 @@ function parseH265ParamSets(input: Buffer) {
     return { vps, sps, pps }
 }
 
+function parseOpusPacketDuration(frame: Uint8Array)
+{
+    // https://datatracker.ietf.org/doc/html/rfc6716#section-3.1
+    const frameSizes = [
+        // SILK only, narrow band
+        10, 20, 40, 60,
+
+        // SILK only, medium band
+        10, 20, 40, 60,
+
+        // SILK only, wide band
+        10, 20, 40, 60,
+
+        // Hybrid, super wide band
+        10, 20,
+
+        // Hybrid, full band
+        10, 20,
+
+        // CELT only, narrow band
+        2.5, 5, 10, 20,
+
+        // CELT only, wide band
+        2.5, 5, 10, 20,
+
+        // CELT only, super wide band
+        2.5, 5, 10, 20,
+
+        // CELT only, full band
+        2.5, 5, 10, 20
+    ];
+
+    const frameSize = 48000 / 1000 * frameSizes[frame[0] >> 3];
+
+    let frameCount = 0;
+    const c = frame[0] & 0b11;
+    switch (c)
+    {
+        case 0:
+            frameCount = 1;
+            break;
+
+        case 1:
+        case 2:
+            frameCount = 2;
+            break;
+
+        case 3:
+            frameCount = frame[1] & 0b111111;
+            break;
+    }
+
+    return frameSize * frameCount;
+}
+
 function h264AddParamSets(frame: Buffer, paramSets: H264ParamSets) {
     const { sps, pps } = paramSets;
     const nalus = splitNalu(frame);
@@ -368,6 +423,7 @@ export async function demux(input: Readable, {
                     loggerFrameVideo.trace("Pushed a frame into the video pipe");
                 }
                 else if (aInfo && aInfo.index === packet.stream_index) {
+                    packet.duration ||= parseOpusPacketDuration(packet.data);
                     resume &&= aPipe.write(packet);
                     loggerFrameAudio.trace("Pushed a frame into the audio pipe");
                 }
