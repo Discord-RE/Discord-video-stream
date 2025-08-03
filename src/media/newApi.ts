@@ -14,6 +14,7 @@ import { createDecoder } from './LibavDecoder.js';
 import LibAV from '@lng2004/libav.js-variant-webcodecs-avf-with-decoders';
 import type { SupportedVideoCodec } from '../utils.js';
 import type { MediaUdp, Streamer } from '../client/index.js';
+import type { VideoStreamInfo } from './LibavDemuxer.js';
 
 export type EncoderOptions = {
     /**
@@ -226,7 +227,7 @@ export function prepareStream(
     // general output options
     command
         .output(output)
-        .outputFormat("matroska");
+        .outputFormat("nut");
 
     // video setup
     const {
@@ -380,25 +381,30 @@ export type PlayStreamOptions = {
     type: "go-live" | "camera",
 
     /**
+     * Set format of the stream
+     */
+    format: "matroska" | "nut",
+
+    /**
      * Override video width sent to Discord.
      * 
      * DO NOT SPECIFY UNLESS YOU KNOW WHAT YOU'RE DOING!
      */
-    width: number,
+    width: number | ((v: VideoStreamInfo) => number),
 
     /**
      * Override video height sent to Discord.
      * 
      * DO NOT SPECIFY UNLESS YOU KNOW WHAT YOU'RE DOING!
      */
-    height: number,
+    height: number | ((v: VideoStreamInfo) => number),
 
     /**
      * Override video frame rate sent to Discord.
      * 
      * DO NOT SPECIFY UNLESS YOU KNOW WHAT YOU'RE DOING!
      */
-    frameRate: number,
+    frameRate: number | ((v: VideoStreamInfo) => number),
 
     /**
      * Same as ffmpeg's `readrate_initial_burst` command line flag
@@ -424,26 +430,12 @@ export async function playStream(
     if (!streamer.voiceConnection)
         throw new Error("Bot is not connected to a voice channel");
 
-    logger.debug("Initializing demuxer");
-    const { video, audio } = await demux(input);
-    cancelSignal?.throwIfAborted();
-
-    if (!video)
-        throw new Error("No video stream in media");
-
-    const cleanupFuncs: (() => unknown)[] = [];
-    const videoCodecMap: Record<number, SupportedVideoCodec> = {
-        [AVCodecID.AV_CODEC_ID_H264]: "H264",
-        [AVCodecID.AV_CODEC_ID_H265]: "H265",
-        [AVCodecID.AV_CODEC_ID_VP8]: "VP8",
-        [AVCodecID.AV_CODEC_ID_VP9]: "VP9",
-        [AVCodecID.AV_CODEC_ID_AV1]: "AV1"
-    }
     const defaultOptions = {
         type: "go-live",
-        width: video.width,
-        height: video.height,
-        frameRate: video.framerate_num / video.framerate_den,
+        format: "nut",
+        width: (video) => video.width,
+        height: (video) => video.height,
+        frameRate: (video) => (video.framerate_num / video.framerate_den),
         readrateInitialBurst: undefined,
         streamPreview: false,
     } satisfies PlayStreamOptions;
@@ -453,6 +445,9 @@ export async function playStream(
         return {
             type:
                 opts.type ?? defaultOptions.type,
+
+            format:
+                opts.format ?? defaultOptions.format,
 
             width:
                 isFiniteNonZero(opts.width) && opts.width > 0
@@ -464,11 +459,10 @@ export async function playStream(
                     ? Math.round(opts.height)
                     : defaultOptions.height,
 
-            frameRate: Math.round(
+            frameRate:
                 isFiniteNonZero(opts.frameRate) && opts.frameRate > 0
                     ? Math.round(opts.frameRate)
-                    : defaultOptions.frameRate
-            ),
+                    : defaultOptions.frameRate,
 
             readrateInitialBurst:
                 isFiniteNonZero(opts.readrateInitialBurst) && opts.readrateInitialBurst > 0
@@ -482,6 +476,24 @@ export async function playStream(
 
     const mergedOptions = mergeOptions(options);
     logger.debug({ options: mergedOptions }, "Merged options");
+
+    logger.debug("Initializing demuxer");
+    const { video, audio } = await demux(input, {
+        format: mergedOptions.format
+    });
+    cancelSignal?.throwIfAborted();
+
+    if (!video)
+        throw new Error("No video stream in media");
+
+    const cleanupFuncs: (() => unknown)[] = [];
+    const videoCodecMap: Record<number, SupportedVideoCodec> = {
+        [AVCodecID.AV_CODEC_ID_H264]: "H264",
+        [AVCodecID.AV_CODEC_ID_H265]: "H265",
+        [AVCodecID.AV_CODEC_ID_VP8]: "VP8",
+        [AVCodecID.AV_CODEC_ID_VP9]: "VP9",
+        [AVCodecID.AV_CODEC_ID_AV1]: "AV1"
+    }
 
     let udp: MediaUdp;
     let stopStream: () => unknown;
@@ -498,10 +510,11 @@ export async function playStream(
     }
     udp.setPacketizer(videoCodecMap[video.codec]);
     udp.mediaConnection.setSpeaking(true);
+    const { width, height, frameRate } = mergedOptions;
     udp.mediaConnection.setVideoAttributes(true, {
-        width: mergedOptions.width,
-        height: mergedOptions.height,
-        fps: mergedOptions.frameRate
+        width: Math.round(typeof width === "function" ? width(video) : width),
+        height: Math.round(typeof height === "function" ? height(video) : height),
+        fps: Math.round(typeof frameRate === "function" ? frameRate(video) : frameRate)
     });
 
     const vStream = new VideoStream(udp);
