@@ -140,3 +140,25 @@ export function mergeNalu(nalus: Buffer[])
     }
     return Buffer.concat(chunks);
 }
+
+export function splitNaluAnnexB(buf: Buffer)
+{
+    const startCode = Buffer.from([0, 0, 1]);
+    let temp: Buffer | null = buf;
+    const nalus: Buffer[] = [];
+    while (temp?.byteLength)
+    {
+        let pos = temp.indexOf(startCode);
+        let length = 3;
+        if (pos > 0 && temp[pos - 1] == 0)
+        {
+            pos--;
+            length++;
+        }
+        const nalu = pos == -1 ? temp : temp.subarray(0, pos);
+        temp = pos == -1 ? null : temp.subarray(pos + length);
+        if (nalu.byteLength)
+            nalus.push(nalu);
+    }
+    return nalus;
+}

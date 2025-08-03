@@ -6,7 +6,8 @@ import { AVCodecID } from "./LibavCodecId.js";
 import {
     H264Helpers, H264NalUnitTypes,
     H265Helpers, H265NalUnitTypes,
-    splitNalu, mergeNalu
+    splitNalu, mergeNalu,
+    splitNaluAnnexB
 } from "../client/processing/AnnexBHelper.js";
 import { PassThrough } from "node:stream";
 import type { Readable } from "node:stream";
@@ -43,8 +44,31 @@ const allowedAudioCodec = new Set([
 ]);
 
 // Parse the avcC atom, which contains SPS and PPS
-function parseavcC(input: Buffer) {
+function parseH264ParamSets(input: Buffer) {
     let buf = input;
+    if (
+        buf.subarray(0, 3).equals(Buffer.from([0, 0, 1])) ||
+        buf.subarray(0, 4).equals(Buffer.from([0, 0, 0, 1]))
+    )
+    {
+        // Annex B
+        const sps: Buffer[] = [];
+        const pps: Buffer[] = [];
+        for (const nalu of splitNaluAnnexB(buf))
+        {
+            const naluType = H264Helpers.getUnitType(nalu);
+            switch (naluType)
+            {
+                case H264NalUnitTypes.SPS:
+                    sps.push(nalu);
+                    break;
+                case H264NalUnitTypes.PPS:
+                    pps.push(nalu);
+                    break;
+            }
+        }
+        return { sps, pps }
+    }
     if (buf[0] !== 1)
         throw new Error("Only configurationVersion 1 is supported");
     // Skip a bunch of stuff we don't care about
@@ -76,8 +100,35 @@ function parseavcC(input: Buffer) {
 }
 
 // Parse the hvcC atom, which contains VPS, SPS, PPS
-function parsehvcC(input: Buffer) {
+function parseH265ParamSets(input: Buffer) {
     let buf = input;
+    if (
+        buf.subarray(0, 3).equals(Buffer.from([0, 0, 1])) ||
+        buf.subarray(0, 4).equals(Buffer.from([0, 0, 0, 1]))
+    )
+    {
+        // Annex B
+        const vps: Buffer[] = [];
+        const sps: Buffer[] = [];
+        const pps: Buffer[] = [];
+        for (const nalu of splitNaluAnnexB(buf))
+        {
+            const naluType = H265Helpers.getUnitType(nalu);
+            switch (naluType)
+            {
+                case H265NalUnitTypes.VPS_NUT:
+                    vps.push(nalu);
+                    break;
+                case H265NalUnitTypes.SPS_NUT:
+                    sps.push(nalu);
+                    break;
+                case H265NalUnitTypes.PPS_NUT:
+                    pps.push(nalu);
+                    break;
+            }
+        }
+        return { vps, sps, pps }
+    }
     if (buf[0] !== 1)
         throw new Error("Only configurationVersion 1 is supported");
     // Skip a bunch of stuff we don't care about
@@ -257,7 +308,7 @@ export async function demux(input: Readable, {
             vInfo = {
                 ...vInfo,
                 // biome-ignore lint/style/noNonNullAssertion: will always be non-null for our use case
-                extradata: parseavcC(Buffer.from(extradata!))
+                extradata: parseH264ParamSets(Buffer.from(extradata!))
             }
         }
         else if (vStream.codec_id === AVCodecID.AV_CODEC_ID_H265) {
@@ -265,7 +316,7 @@ export async function demux(input: Readable, {
             vInfo = {
                 ...vInfo,
                 // biome-ignore lint/style/noNonNullAssertion: will always be non-null for our use case
-                extradata: parsehvcC(Buffer.from(extradata!))
+                extradata: parseH265ParamSets(Buffer.from(extradata!))
             }
         }
         loggerFormat.info({
