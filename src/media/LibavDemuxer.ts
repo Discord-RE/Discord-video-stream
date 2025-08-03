@@ -16,14 +16,14 @@ type MediaStreamInfoCommon = {
     codec: AVCodecID,
     codecpar: CodecParameters,
 }
-type VideoStreamInfo = MediaStreamInfoCommon & {
+export type VideoStreamInfo = MediaStreamInfoCommon & {
     width: number,
     height: number,
     framerate_num: number,
     framerate_den: number,
     extradata?: unknown
 }
-type AudioStreamInfo = MediaStreamInfoCommon & {
+export type AudioStreamInfo = MediaStreamInfoCommon & {
     sample_rate: number
 };
 
@@ -186,7 +186,13 @@ libavInstance.then((libav) => {
     }
 })
 
-export async function demux(input: Readable, cancelSignal?: AbortSignal) {
+type DemuxerOptions = {
+    format: "matroska" | "nut"
+}
+
+export async function demux(input: Readable, {
+    format
+}: DemuxerOptions) {
     const loggerInput = new Log("demux:input");
     const loggerFormat = new Log("demux:format");
     const loggerFrameCommon = new Log("demux:frame:common");
@@ -209,7 +215,7 @@ export async function demux(input: Readable, cancelSignal?: AbortSignal) {
     input.on("data", ondata);
     input.on("end", onend);
 
-    const [fmt_ctx, streams] = await libav.ff_init_demuxer_file(filename, "matroska");
+    const [fmt_ctx, streams] = await libav.ff_init_demuxer_file(filename, format);
     const pkt = await libav.av_packet_alloc();
 
     const cleanup = () => {
