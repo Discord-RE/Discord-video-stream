@@ -6,7 +6,7 @@ import {
     type AnnexBHelpers
 } from "../processing/AnnexBHelper.js";
 import { extensions } from "../../utils.js";
-import { splitNaluLengthPrefixed } from "../processing/AnnexBHelper.js";
+import { splitNalu } from "../processing/AnnexBHelper.js";
 import { CodecPayloadType } from "../voice/BaseMediaConnection.js";
 
 /**
@@ -74,7 +74,7 @@ class VideoPacketizerAnnexB extends BaseMediaPacketizer {
     public override async sendFrame(frame: Buffer, frametime: number): Promise<void> {
         super.sendFrame(frame, frametime);
 
-        const nalus = splitNaluLengthPrefixed(frame);
+        const { nalus } = splitNalu(frame);
 
         let packetsSent = 0;
         let bytesSent = 0;

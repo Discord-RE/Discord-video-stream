@@ -6,7 +6,7 @@ import { AVCodecID } from "./LibavCodecId.js";
 import {
     H264Helpers, H264NalUnitTypes,
     H265Helpers, H265NalUnitTypes,
-    splitNaluLengthPrefixed, mergeNaluLengthPrefixed,
+    splitNalu, mergeNalu,
     splitNaluAnnexB,
     startCode3, startCode4
 } from "../client/processing/AnnexBHelper.js";
@@ -224,8 +224,7 @@ function parseOpusPacketDuration(frame: Uint8Array)
 
 function h264AddParamSets(frame: Buffer, paramSets: H264ParamSets) {
     const { sps, pps } = paramSets;
-    const isAnnexB = frame.subarray(0, 3).equals(startCode3) || frame.subarray(0, 4).equals(startCode4);
-    const nalus = isAnnexB ? splitNaluAnnexB(frame) : splitNaluLengthPrefixed(frame);
+    const { nalus, isAnnexB } = splitNalu(frame);
     // Technically non-IDR I frames exist ("open GOP"), but they're exceedingly
     // rare in the wild, and no encoder produces it by default
     let isIDR = false;
@@ -242,20 +241,19 @@ function h264AddParamSets(frame: Buffer, paramSets: H264ParamSets) {
     }
     if (!isIDR) {
         // Not an IDR, return as is
-        return mergeNaluLengthPrefixed(nalus);
+        return frame;
     }
     const chunks = [];
     if (!hasSPS)
         chunks.push(...sps);
     if (!hasPPS)
         chunks.push(...pps);
-    return mergeNaluLengthPrefixed([...chunks, ...nalus]);
+    return mergeNalu(nalus, isAnnexB);
 }
 
 function h265AddParamSets(frame: Buffer, paramSets: H265ParamSets) {
     const { vps, sps, pps } = paramSets;
-    const isAnnexB = frame.subarray(0, 3).equals(startCode3) || frame.subarray(0, 4).equals(startCode4);
-    const nalus = isAnnexB ? splitNaluAnnexB(frame) : splitNaluLengthPrefixed(frame);
+    const { nalus, isAnnexB } = splitNalu(frame);
     // Technically non-IDR I frames exist ("open GOP"), but they're exceedingly
     // rare in the wild, and no encoder produces it by default
     let isIDR = false;
@@ -275,7 +273,7 @@ function h265AddParamSets(frame: Buffer, paramSets: H265ParamSets) {
     }
     if (!isIDR) {
         // Not an IDR, return as is
-        return mergeNaluLengthPrefixed(nalus);
+        return frame;
     }
     const chunks = [];
     if (!hasVPS)
@@ -284,7 +282,7 @@ function h265AddParamSets(frame: Buffer, paramSets: H265ParamSets) {
         chunks.push(...sps);
     if (!hasPPS)
         chunks.push(...pps);
-    return mergeNaluLengthPrefixed([...chunks, ...nalus]);
+    return mergeNalu(nalus, isAnnexB);
 }
 
 const idToStream = new Map<string, Readable>();

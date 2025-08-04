@@ -164,3 +164,24 @@ export function splitNaluAnnexB(buf: Buffer)
     }
     return nalus;
 }
+
+export function mergeNaluAnnexB(nalus: Buffer[])
+{
+    return Buffer.concat(
+        nalus.flatMap(nalu => [startCode3, nalu])
+    )
+}
+
+export function splitNalu(buf: Buffer)
+{
+    const isAnnexB = buf.subarray(0, 3).equals(startCode3) || buf.subarray(0, 4).equals(startCode4);
+    return {
+        isAnnexB,
+        nalus: isAnnexB ? splitNaluAnnexB(buf) : splitNaluLengthPrefixed(buf)
+    }
+}
+
+export function mergeNalu(nalus: Buffer[], annexB: boolean)
+{
+    return annexB ? mergeNaluAnnexB(nalus) : mergeNaluLengthPrefixed(nalus);
+}
