@@ -248,7 +248,7 @@ function h264AddParamSets(frame: Buffer, paramSets: H264ParamSets) {
         chunks.push(...sps);
     if (!hasPPS)
         chunks.push(...pps);
-    return mergeNalu(nalus, isAnnexB);
+    return mergeNalu([...chunks, ...nalus], isAnnexB);
 }
 
 function h265AddParamSets(frame: Buffer, paramSets: H265ParamSets) {
@@ -282,7 +282,7 @@ function h265AddParamSets(frame: Buffer, paramSets: H265ParamSets) {
         chunks.push(...sps);
     if (!hasPPS)
         chunks.push(...pps);
-    return mergeNalu(nalus, isAnnexB);
+    return mergeNalu([...chunks, ...nalus], isAnnexB);
 }
 
 const idToStream = new Map<string, Readable>();
