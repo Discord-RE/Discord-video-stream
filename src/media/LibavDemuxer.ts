@@ -224,7 +224,6 @@ function parseOpusPacketDuration(frame: Uint8Array)
 
 function h264AddParamSets(frame: Buffer, paramSets: H264ParamSets) {
     const { sps, pps } = paramSets;
-    
     const isAnnexB = frame.subarray(0, 3).equals(startCode3) || frame.subarray(0, 4).equals(startCode4);
     const nalus = isAnnexB ? splitNaluAnnexB(frame) : splitNaluLengthPrefixed(frame);
     // Technically non-IDR I frames exist ("open GOP"), but they're exceedingly
@@ -243,7 +242,7 @@ function h264AddParamSets(frame: Buffer, paramSets: H264ParamSets) {
     }
     if (!isIDR) {
         // Not an IDR, return as is
-        return frame;
+        return mergeNaluLengthPrefixed(nalus);
     }
     const chunks = [];
     if (!hasSPS)
@@ -255,7 +254,8 @@ function h264AddParamSets(frame: Buffer, paramSets: H264ParamSets) {
 
 function h265AddParamSets(frame: Buffer, paramSets: H265ParamSets) {
     const { vps, sps, pps } = paramSets;
-    const nalus = splitNaluLengthPrefixed(frame);
+    const isAnnexB = frame.subarray(0, 3).equals(startCode3) || frame.subarray(0, 4).equals(startCode4);
+    const nalus = isAnnexB ? splitNaluAnnexB(frame) : splitNaluLengthPrefixed(frame);
     // Technically non-IDR I frames exist ("open GOP"), but they're exceedingly
     // rare in the wild, and no encoder produces it by default
     let isIDR = false;
@@ -275,7 +275,7 @@ function h265AddParamSets(frame: Buffer, paramSets: H265ParamSets) {
     }
     if (!isIDR) {
         // Not an IDR, return as is
-        return frame;
+        return mergeNaluLengthPrefixed(nalus);
     }
     const chunks = [];
     if (!hasVPS)
