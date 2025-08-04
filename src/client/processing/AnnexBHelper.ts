@@ -114,8 +114,11 @@ export const H265Helpers: AnnexBHelpers = {
     }
 }
 
-// Get individual NAL units from an AVPacket frame
-export function splitNalu(frame: Buffer) {
+export const startCode3 = Buffer.from([0, 0, 1]);
+export const startCode4 = Buffer.from([0, 0, 0, 1]);
+
+// Get individual NAL units from a length-prefixed NALU buffer
+export function splitNaluLengthPrefixed(frame: Buffer) {
     const nalus = [];
     let offset = 0;
     while (offset < frame.length) {
@@ -128,8 +131,8 @@ export function splitNalu(frame: Buffer) {
     return nalus;
 }
 
-// Merge NAL units into an AVPacket frame
-export function mergeNalu(nalus: Buffer[])
+// Merge NAL units into a length-prefixed NALU buffer
+export function mergeNaluLengthPrefixed(nalus: Buffer[])
 {
     const chunks = [];
     for (const nalu of nalus)
@@ -143,12 +146,11 @@ export function mergeNalu(nalus: Buffer[])
 
 export function splitNaluAnnexB(buf: Buffer)
 {
-    const startCode = Buffer.from([0, 0, 1]);
     let temp: Buffer | null = buf;
     const nalus: Buffer[] = [];
     while (temp?.byteLength)
     {
-        let pos = temp.indexOf(startCode);
+        let pos = temp.indexOf(startCode3);
         let length = 3;
         if (pos > 0 && temp[pos - 1] == 0)
         {

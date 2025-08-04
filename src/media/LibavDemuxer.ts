@@ -6,8 +6,9 @@ import { AVCodecID } from "./LibavCodecId.js";
 import {
     H264Helpers, H264NalUnitTypes,
     H265Helpers, H265NalUnitTypes,
-    splitNalu, mergeNalu,
-    splitNaluAnnexB
+    splitNaluLengthPrefixed, mergeNaluLengthPrefixed,
+    splitNaluAnnexB,
+    startCode3, startCode4
 } from "../client/processing/AnnexBHelper.js";
 import { PassThrough } from "node:stream";
 import type { Readable } from "node:stream";
@@ -43,12 +44,12 @@ const allowedAudioCodec = new Set([
     AVCodecID.AV_CODEC_ID_OPUS
 ]);
 
-// Parse the avcC atom, which contains SPS and PPS
+// Parse H264 extradata, which can be either in Annex B or avcC format
 function parseH264ParamSets(input: Buffer) {
     let buf = input;
     if (
-        buf.subarray(0, 3).equals(Buffer.from([0, 0, 1])) ||
-        buf.subarray(0, 4).equals(Buffer.from([0, 0, 0, 1]))
+        buf.subarray(0, 3).equals(startCode3) ||
+        buf.subarray(0, 4).equals(startCode4)
     )
     {
         // Annex B
@@ -99,7 +100,7 @@ function parseH264ParamSets(input: Buffer) {
     return { sps, pps }
 }
 
-// Parse the hvcC atom, which contains VPS, SPS, PPS
+// Parse H265 extradata, which can be either in Annex B or hvcC format
 function parseH265ParamSets(input: Buffer) {
     let buf = input;
     if (
@@ -223,7 +224,9 @@ function parseOpusPacketDuration(frame: Uint8Array)
 
 function h264AddParamSets(frame: Buffer, paramSets: H264ParamSets) {
     const { sps, pps } = paramSets;
-    const nalus = splitNalu(frame);
+    
+    const isAnnexB = frame.subarray(0, 3).equals(startCode3) || frame.subarray(0, 4).equals(startCode4);
+    const nalus = isAnnexB ? splitNaluAnnexB(frame) : splitNaluLengthPrefixed(frame);
     // Technically non-IDR I frames exist ("open GOP"), but they're exceedingly
     // rare in the wild, and no encoder produces it by default
     let isIDR = false;
@@ -243,16 +246,16 @@ function h264AddParamSets(frame: Buffer, paramSets: H264ParamSets) {
         return frame;
     }
     const chunks = [];
-    if (!hasPPS)
-        chunks.push(...sps);
     if (!hasSPS)
+        chunks.push(...sps);
+    if (!hasPPS)
         chunks.push(...pps);
-    return mergeNalu([...chunks, ...nalus]);
+    return mergeNaluLengthPrefixed([...chunks, ...nalus]);
 }
 
 function h265AddParamSets(frame: Buffer, paramSets: H265ParamSets) {
     const { vps, sps, pps } = paramSets;
-    const nalus = splitNalu(frame);
+    const nalus = splitNaluLengthPrefixed(frame);
     // Technically non-IDR I frames exist ("open GOP"), but they're exceedingly
     // rare in the wild, and no encoder produces it by default
     let isIDR = false;
@@ -277,11 +280,11 @@ function h265AddParamSets(frame: Buffer, paramSets: H265ParamSets) {
     const chunks = [];
     if (!hasVPS)
         chunks.push(...vps);
-    if (!hasPPS)
-        chunks.push(...sps);
     if (!hasSPS)
+        chunks.push(...sps);
+    if (!hasPPS)
         chunks.push(...pps);
-    return mergeNalu([...chunks, ...nalus]);
+    return mergeNaluLengthPrefixed([...chunks, ...nalus]);
 }
 
 const idToStream = new Map<string, Readable>();
