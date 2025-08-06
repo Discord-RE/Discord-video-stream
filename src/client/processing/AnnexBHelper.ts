@@ -150,7 +150,7 @@ export function splitNaluAnnexB(buf: Buffer)
     const nalus: Buffer[] = [];
     while (temp?.byteLength)
     {
-        let pos = temp.indexOf(startCode3);
+        let pos: number = temp.indexOf(startCode3);
         let length = 3;
         if (pos > 0 && temp[pos - 1] == 0)
         {

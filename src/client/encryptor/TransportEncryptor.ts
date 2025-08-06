@@ -13,7 +13,7 @@ export class AES256TransportEncryptor implements TransportEncryptor
     constructor(secretKey: Buffer)
     {
         this._secretKey = crypto.subtle.importKey("raw", 
-            secretKey,
+            Buffer.from(secretKey),
             {
                 name: "AES-GCM",
                 length: 32
@@ -29,8 +29,8 @@ export class AES256TransportEncryptor implements TransportEncryptor
         const ciphertext = Buffer.from(await crypto.subtle.encrypt({
             name: "AES-GCM",
             iv: nonceBuffer,
-            additionalData,
-        }, await this._secretKey, plaintext));
+            additionalData: Buffer.from(additionalData),
+        }, await this._secretKey, Buffer.from(plaintext)));
 
         return [ciphertext, nonceBuffer]
     }
