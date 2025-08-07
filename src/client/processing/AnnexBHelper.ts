@@ -114,8 +114,11 @@ export const H265Helpers: AnnexBHelpers = {
     }
 }
 
-// Get individual NAL units from an AVPacket frame
-export function splitNalu(frame: Buffer) {
+export const startCode3 = Buffer.from([0, 0, 1]);
+export const startCode4 = Buffer.from([0, 0, 0, 1]);
+
+// Get individual NAL units from a length-prefixed NALU buffer
+export function splitNaluLengthPrefixed(frame: Buffer) {
     const nalus = [];
     let offset = 0;
     while (offset < frame.length) {
@@ -128,8 +131,8 @@ export function splitNalu(frame: Buffer) {
     return nalus;
 }
 
-// Merge NAL units into an AVPacket frame
-export function mergeNalu(nalus: Buffer[])
+// Merge NAL units into a length-prefixed NALU buffer
+export function mergeNaluLengthPrefixed(nalus: Buffer[])
 {
     const chunks = [];
     for (const nalu of nalus)
@@ -139,4 +142,46 @@ export function mergeNalu(nalus: Buffer[])
         chunks.push(size, nalu);
     }
     return Buffer.concat(chunks);
+}
+
+export function splitNaluAnnexB(buf: Buffer)
+{
+    let temp: Buffer | null = buf;
+    const nalus: Buffer[] = [];
+    while (temp?.byteLength)
+    {
+        let pos: number = temp.indexOf(startCode3);
+        let length = 3;
+        if (pos > 0 && temp[pos - 1] == 0)
+        {
+            pos--;
+            length++;
+        }
+        const nalu = pos == -1 ? temp : temp.subarray(0, pos);
+        temp = pos == -1 ? null : temp.subarray(pos + length);
+        if (nalu.byteLength)
+            nalus.push(nalu);
+    }
+    return nalus;
+}
+
+export function mergeNaluAnnexB(nalus: Buffer[])
+{
+    return Buffer.concat(
+        nalus.flatMap(nalu => [startCode3, nalu])
+    )
+}
+
+export function splitNalu(buf: Buffer)
+{
+    const isAnnexB = buf.subarray(0, 3).equals(startCode3) || buf.subarray(0, 4).equals(startCode4);
+    return {
+        isAnnexB,
+        nalus: isAnnexB ? splitNaluAnnexB(buf) : splitNaluLengthPrefixed(buf)
+    }
+}
+
+export function mergeNalu(nalus: Buffer[], annexB: boolean)
+{
+    return annexB ? mergeNaluAnnexB(nalus) : mergeNaluLengthPrefixed(nalus);
 }

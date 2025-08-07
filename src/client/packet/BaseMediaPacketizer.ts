@@ -143,7 +143,7 @@ export class BaseMediaPacketizer {
             packetHeader[1] |= 0b10000000; // mark M bit if last frame
     
         packetHeader.writeUIntBE(this.getNewSequence(), 2, 2);
-        packetHeader.writeUIntBE(this._timestamp, 4, 4);
+        packetHeader.writeUIntBE(Math.round(this._timestamp), 4, 4);
         packetHeader.writeUIntBE(this._ssrc, 8, 4);
         return packetHeader;
     }
@@ -169,7 +169,7 @@ export class BaseMediaPacketizer {
 
         senderReport.writeUInt32BE(ntpTimestampMsw, 0);
         senderReport.writeUInt32BE(ntpTimestampLsw, 4);
-        senderReport.writeUInt32BE(this._timestamp, 8);
+        senderReport.writeUInt32BE(Math.round(this._timestamp), 8);
         senderReport.writeUInt32BE(this._totalPackets % max_int32bit, 12);
         senderReport.writeUInt32BE(this._totalBytes, 16);
 

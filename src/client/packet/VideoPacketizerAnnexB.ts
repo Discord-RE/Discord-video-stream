@@ -74,7 +74,7 @@ class VideoPacketizerAnnexB extends BaseMediaPacketizer {
     public override async sendFrame(frame: Buffer, frametime: number): Promise<void> {
         super.sendFrame(frame, frametime);
 
-        const nalus = splitNalu(frame);
+        const { nalus } = splitNalu(frame);
 
         let packetsSent = 0;
         let bytesSent = 0;
