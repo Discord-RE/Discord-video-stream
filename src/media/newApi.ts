@@ -2,12 +2,11 @@ import ffmpeg from 'fluent-ffmpeg';
 import pDebounce from 'p-debounce';
 import sharp from 'sharp';
 import Log from 'debug-level';
-import * as zmq from "zeromq";
 import { PassThrough, type Readable } from "node:stream";
 import { demux } from './LibavDemuxer.js';
 import { VideoStream } from './VideoStream.js';
 import { AudioStream } from './AudioStream.js';
-import { isFiniteNonZero } from '../utils.js';
+import { isBun, isFiniteNonZero } from '../utils.js';
 import { AVCodecID } from './LibavCodecId.js';
 import { createDecoder } from './LibavDecoder.js';
 
@@ -312,18 +311,6 @@ export function prepareStream(
         command.addOptions(mergedOptions.customFfmpegFlags);
     }
 
-    // realtime control mechanism
-    const zmqAudio = "tcp://localhost:42069";
-    const zmqAudioClient = new zmq.Request({ sendTimeout: 5000, receiveTimeout: 5000 });
-
-    if (includeAudio)
-    {
-        command.audioFilters(`azmq=b=${zmqAudio.replaceAll(":","\\\\:")}`)
-        output.once("data", () => {
-            zmqAudioClient.connect(zmqAudio);
-        });
-    }
-
     // exit handling
     const promise = new Promise<void>((resolve, reject) => {
         command.on("error", (err) => {
@@ -341,9 +328,26 @@ export function prepareStream(
     })
     promise.catch(() => {});
     cancelSignal?.addEventListener("abort", () => command.kill("SIGTERM"), { once: true });
+
+    // realtime control mechanism
+    let currentVolume = 1;
+    const zmqAudioClient = (async() => {
+        if (!includeAudio)
+            return null;
+        if (isBun())
+            return null;
+        const zmqEndpoint = "tcp://localhost:42069";
+        command.audioFilters(`azmq=b=${zmqEndpoint.replaceAll(":","\\\\:")}`);
+
+        const zmq = await import("zeromq");
+        const zmqClient = new zmq.Request({ sendTimeout: 5000, receiveTimeout: 5000 });
+        zmqClient.connect(zmqEndpoint);
+        promise.finally(() => zmqClient.disconnect(zmqEndpoint));
+        return zmqClient;
+    })();
+
     command.run();
 
-    let currentVolume = 1;
     return {
         command,
         output,
@@ -358,8 +362,11 @@ export function prepareStream(
                     return false;
                 try
                 {
-                    await zmqAudioClient.send(`volume@internal_lib volume ${newVolume}`);
-                    const [res] = await zmqAudioClient.receive();
+                    const client = await zmqAudioClient;
+                    if (!client)
+                        return false;
+                    await client.send(`volume@internal_lib volume ${newVolume}`);
+                    const [res] = await client.receive();
                     if (res.toString("utf-8") !== "0 Error number 0 occurred")
                         return false;
                     currentVolume = newVolume;
