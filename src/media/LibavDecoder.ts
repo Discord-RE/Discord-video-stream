@@ -7,12 +7,19 @@ export async function createDecoder(id: number, codecpar: LibAV.CodecParameters)
 {
     if (isDeno() || isBun())
     {
-        console.error(
-            "The decoder currently doesn't work with Deno and Bun, due to " +
-            "various issues with Emscripten's pthread support leading to "  +
-            "crashes. The decoder will not be initialized"
-        );
-        return null;
+        if (process.env.LIBAVDECODER_FORCE_ENABLED)
+        {
+            console.error("Video decoder force enabled. Here be dragons!")
+        }
+        else
+        {
+            console.error(
+                "The decoder currently doesn't work with Deno and Bun, due to " +
+                "various issues with Emscripten's pthread support leading to "  +
+                "crashes. The decoder will not be initialized"
+            );
+            return null;
+        }
     }
     libavInstance ??= LibAV.LibAV({ yesthreads: true });
     let freed = false;
