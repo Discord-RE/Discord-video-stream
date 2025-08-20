@@ -1,16 +1,11 @@
-import { AV_PIX_FMT_RGBA, AVMEDIA_TYPE_VIDEO } from "@lng2004/libav.js-variant-webcodecs-avf-with-decoders";
-import LibAV from "@lng2004/libav.js-variant-webcodecs-avf-with-decoders";
+import LibAV, { AV_PIX_FMT_RGBA, AVMEDIA_TYPE_VIDEO } from "@lng2004/libav.js-variant-webcodecs-avf-with-decoders";
+import { isDeno, isBun } from "../utils.js";
 
 let libavInstance: Promise<LibAV.LibAV>;
 
-// @ts-expect-error
-const isDeno = typeof Deno !== "undefined";
-// @ts-expect-error
-const isBun = typeof Bun !== "undefined";
-
 export async function createDecoder(id: number, codecpar: LibAV.CodecParameters)
 {
-    if (isDeno || isBun)
+    if (isDeno() || isBun())
     {
         console.error(
             "The decoder currently doesn't work with Deno and Bun, due to " +
