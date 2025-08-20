@@ -566,7 +566,10 @@ export async function playStream(
                 if (!(packet.flags !== undefined && packet.flags & LibAV.AV_PKT_FLAG_KEY))
                     return;
                 const decodeStart = performance.now();
-                const [frame] = await decoder.decode([packet]).catch(() => []);
+                const [frame] = await decoder.decode([packet]).catch((e) => {
+                    logger.error(e, "Failed to decode the frame");
+                    return []
+                });
                 if (!frame)
                     return;
                 const decodeEnd = performance.now();
