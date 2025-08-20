@@ -6,7 +6,7 @@ import { PassThrough, type Readable } from "node:stream";
 import { demux } from './LibavDemuxer.js';
 import { VideoStream } from './VideoStream.js';
 import { AudioStream } from './AudioStream.js';
-import { isBun, isFiniteNonZero } from '../utils.js';
+import { isBun, isDeno, isFiniteNonZero } from '../utils.js';
 import { AVCodecID } from './LibavCodecId.js';
 import { createDecoder } from './LibavDecoder.js';
 
@@ -334,7 +334,7 @@ export function prepareStream(
     const zmqAudioClient = (async() => {
         if (!includeAudio)
             return null;
-        if (isBun())
+        if (isBun() || isDeno())
             return null;
         const zmqEndpoint = "tcp://localhost:42069";
         command.audioFilters(`azmq=b=${zmqEndpoint.replaceAll(":","\\\\:")}`);
