@@ -75,3 +75,15 @@ export function generateStreamKey(type: "guild" | "call", guildId: string | null
 export function isVoiceChannel(channel: AnyChannel): channel is DMChannel | GroupDMChannel | VoiceBasedChannel {
     return (channel.type === "DM" || channel.type === "GROUP_DM" || channel.type === "GUILD_STAGE_VOICE" || channel.type === "GUILD_VOICE")
 }
+
+export function isDeno()
+{
+    // @ts-expect-error
+    return typeof Deno !== "undefined";
+}
+
+export function isBun()
+{
+    // @ts-expect-error
+    return typeof Bun !== "undefined";
+}

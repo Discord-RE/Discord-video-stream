@@ -1,23 +1,25 @@
-import { AV_PIX_FMT_RGBA, AVMEDIA_TYPE_VIDEO } from "@lng2004/libav.js-variant-webcodecs-avf-with-decoders";
-import LibAV from "@lng2004/libav.js-variant-webcodecs-avf-with-decoders";
+import LibAV, { AV_PIX_FMT_RGBA, AVMEDIA_TYPE_VIDEO } from "@lng2004/libav.js-variant-webcodecs-avf-with-decoders";
+import { isDeno, isBun } from "../utils.js";
 
 let libavInstance: Promise<LibAV.LibAV>;
 
-// @ts-expect-error
-const isDeno = typeof Deno !== "undefined";
-// @ts-expect-error
-const isBun = typeof Bun !== "undefined";
-
 export async function createDecoder(id: number, codecpar: LibAV.CodecParameters)
 {
-    if (isDeno || isBun)
+    if (isDeno() || isBun())
     {
-        console.error(
-            "The decoder currently doesn't work with Deno and Bun, due to " +
-            "various issues with Emscripten's pthread support leading to "  +
-            "crashes. The decoder will not be initialized"
-        );
-        return null;
+        if (process.env.LIBAVDECODER_FORCE_ENABLED)
+        {
+            console.error("Video decoder force enabled. Here be dragons!")
+        }
+        else
+        {
+            console.error(
+                "The decoder currently doesn't work with Deno and Bun, due to " +
+                "various issues with Emscripten's pthread support leading to "  +
+                "crashes. The decoder will not be initialized"
+            );
+            return null;
+        }
     }
     libavInstance ??= LibAV.LibAV({ yesthreads: true });
     let freed = false;
