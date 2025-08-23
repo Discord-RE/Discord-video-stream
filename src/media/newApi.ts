@@ -336,7 +336,7 @@ export function prepareStream(
             return null;
         if (isBun() || isDeno())
             return null;
-        const zmqEndpoint = "tcp://localhost:42069";
+        const zmqEndpoint = "tcp://127.0.0.1:42069";
         command.audioFilters(`azmq=b=${zmqEndpoint.replaceAll(":","\\\\:")}`);
 
         const zmq = await import("zeromq");
