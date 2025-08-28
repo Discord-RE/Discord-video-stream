@@ -457,18 +457,18 @@ export async function playStream(
                 opts.format ?? defaultOptions.format,
 
             width:
-                isFiniteNonZero(opts.width) && opts.width > 0
-                    ? Math.round(opts.width)
+                typeof opts.width === "function" || (isFiniteNonZero(opts.width) && opts.width > 0)
+                    ? opts.width
                     : defaultOptions.width,
 
             height:
-                isFiniteNonZero(opts.height) && opts.height > 0
-                    ? Math.round(opts.height)
+                typeof opts.height === "function" || (isFiniteNonZero(opts.height) && opts.height > 0)
+                    ? opts.height
                     : defaultOptions.height,
 
             frameRate:
-                isFiniteNonZero(opts.frameRate) && opts.frameRate > 0
-                    ? Math.round(opts.frameRate)
+                typeof opts.frameRate === "function" || (isFiniteNonZero(opts.frameRate) && opts.frameRate > 0)
+                    ? opts.frameRate
                     : defaultOptions.frameRate,
 
             readrateInitialBurst:
