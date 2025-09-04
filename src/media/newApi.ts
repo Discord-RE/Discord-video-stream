@@ -9,6 +9,7 @@ import { AudioStream } from './AudioStream.js';
 import { isBun, isDeno, isFiniteNonZero } from '../utils.js';
 import { AVCodecID } from './LibavCodecId.js';
 import { createDecoder } from './LibavDecoder.js';
+import type { Request } from 'zeromq';
 
 import LibAV from '@lng2004/libav.js-variant-webcodecs-avf-with-decoders';
 import type { SupportedVideoCodec } from '../utils.js';
@@ -331,20 +332,26 @@ export function prepareStream(
 
     // realtime control mechanism
     let currentVolume = 1;
-    const zmqAudioClient = (async() => {
-        if (!includeAudio)
-            return null;
-        if (isBun() || isDeno())
-            return null;
-        const zmqEndpoint = "tcp://localhost:42069";
+    let zmqClientPromise: Promise<Request> | undefined;
+    if (includeAudio && !isBun() && !isDeno())
+    {
+        function randomInclusive(start: number, end: number)
+        {
+            return Math.floor(Math.random() * (end - start + 1)) + start;
+        }
+        // Last octet is from 2 to 254 to avoid WSL2 shenanigans
+        const loopbackIp = [
+            127, randomInclusive(0, 255), randomInclusive(0, 255), randomInclusive(2, 254)
+        ].join(".");
+        const zmqEndpoint = `tcp://${loopbackIp}:42069`;
         command.audioFilters(`azmq=b=${zmqEndpoint.replaceAll(":","\\\\:")}`);
-
-        const zmq = await import("zeromq");
-        const zmqClient = new zmq.Request({ sendTimeout: 5000, receiveTimeout: 5000 });
-        zmqClient.connect(zmqEndpoint);
-        promise.finally(() => zmqClient.disconnect(zmqEndpoint));
-        return zmqClient;
-    })();
+        zmqClientPromise = import("zeromq").then(zmq => {
+            const client = new zmq.Request({ sendTimeout: 5000, receiveTimeout: 5000 });
+            client.connect(zmqEndpoint);
+            promise.finally(() => client.disconnect(zmqEndpoint));
+            return client;
+        });
+    }
 
     command.run();
 
@@ -362,9 +369,9 @@ export function prepareStream(
                     return false;
                 try
                 {
-                    const client = await zmqAudioClient;
-                    if (!client)
+                    if (!zmqClientPromise)
                         return false;
+                    const client = await zmqClientPromise;
                     await client.send(`volume@internal_lib volume ${newVolume}`);
                     const [res] = await client.receive();
                     if (res.toString("utf-8") !== "0 Error number 0 occurred")
