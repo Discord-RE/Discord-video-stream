@@ -374,7 +374,7 @@ export function prepareStream(
                     const client = await zmqClientPromise;
                     await client.send(`volume@internal_lib volume ${newVolume}`);
                     const [res] = await client.receive();
-                    if (res.toString("utf-8") !== "0 Error number 0 occurred")
+                    if (res.toString("utf-8").split(" ")[0] !== "0")
                         return false;
                     currentVolume = newVolume;
                     return true;
