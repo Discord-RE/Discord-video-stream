@@ -86,7 +86,7 @@ class VideoPacketizerAnnexB extends BaseMediaPacketizer {
                 const packetHeader = Buffer.concat([this.makeRtpHeader(isLastNal), this.createExtensionHeader(extensions)]);
 
                 const [ciphertext, nonceBuffer] = await this.encryptData(
-                    Buffer.concat([this.createExtensionPayload(extensions), nalu]), packetHeader
+                    Buffer.concat([this.createPlayoutDelayExtPayload(extensions), nalu]), packetHeader
                 );
                 const packet = Buffer.concat([
                     packetHeader, ciphertext,
@@ -110,7 +110,7 @@ class VideoPacketizerAnnexB extends BaseMediaPacketizer {
                     const packetHeader = Buffer.concat([this.makeRtpHeader(markerBit), this.createExtensionHeader(extensions)]);
 
                     const packetData = Buffer.concat([
-                        this.createExtensionPayload(extensions),
+                        this.createPlayoutDelayExtPayload(extensions),
                         this.makeFragmentationUnitHeader(
                             isFirstPacket,
                             isFinalPacket,

@@ -206,7 +206,7 @@ export class BaseMediaPacketizer {
      * to their webrtc gateway using the webclient and the client will send an SDP offer containing it
      * @returns extension payload
      */
-    public createExtensionPayload(extensions: { id: number, len: number, val: number}[]): Buffer {
+    public createPlayoutDelayExtPayload(extensions: { id: number, len: number, val: number}[]): Buffer {
         const extensionsData = [];
         for(const ext of extensions){
             /**
