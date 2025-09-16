@@ -1,5 +1,5 @@
 import type { MediaUdp } from "../voice/MediaUdp.js";
-import { extensions, max_int16bit } from "../../utils.js";
+import { max_int16bit } from "../../utils.js";
 import { BaseMediaPacketizer } from "./BaseMediaPacketizer.js";
 import { CodecPayloadType } from "../voice/BaseMediaConnection.js";
 
@@ -36,9 +36,9 @@ export class VideoPacketizerVP8 extends BaseMediaPacketizer {
     public async createPacket(chunk: Buffer, isLastPacket = true, isFirstPacket = true): Promise<Buffer> {
         if(chunk.length > this.mtu) throw Error('error packetizing video frame: frame is larger than mtu');
 
-        const packetHeader = Buffer.concat([this.makeRtpHeader(isLastPacket), this.createExtensionHeader(extensions)]);
+        const packetHeader = Buffer.concat([this.makeRtpHeader(isLastPacket), BaseMediaPacketizer.extensionHeader]);
 
-        const packetData = Buffer.concat([this.createPlayoutDelayExtPayload(extensions), this.makeChunk(chunk, isFirstPacket)]);
+        const packetData = Buffer.concat([...BaseMediaPacketizer.extensions, this.makeChunk(chunk, isFirstPacket)]);
     
         // nonce buffer used for encryption. 4 bytes are appended to end of packet
         const [ciphertext, nonceBuffer] = await this.encryptData(packetData, packetHeader);

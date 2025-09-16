@@ -23,9 +23,6 @@ export enum SupportedEncryptionModes {
 
 export type SupportedVideoCodec = "H264" | "H265" | "VP8" | "VP9" | "AV1";
 
-// RTP extensions
-export const extensions = [{ id: 5, len: 2, val: 0 }];
-
 export const max_int16bit = 2 ** 16;
 export const max_int32bit = 2 ** 32;
 

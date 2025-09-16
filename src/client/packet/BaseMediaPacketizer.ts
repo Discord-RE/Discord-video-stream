@@ -1,16 +1,14 @@
-import sp from "sodium-plus";
 import { Log } from "debug-level";
-import { webcrypto } from 'node:crypto';
-import { max_int16bit, max_int32bit, SupportedEncryptionModes } from "../../utils.js";
+import { max_int16bit, max_int32bit } from "../../utils.js";
 import type { MediaUdp } from "../voice/MediaUdp.js";
-
-const { SodiumPlus, CryptographyKey } = sp;
 
 const ntpEpoch = new Date("Jan 01 1900 GMT").getTime();
 
-let sodium: Promise<sp.SodiumPlus> | undefined;
-
 export class BaseMediaPacketizer {
+    protected static extensions = [
+        this.createPlayoutDelayExtPayload(0, 0)
+    ];
+    protected static extensionHeader = this.createExtensionHeader(this.extensions.length);
     private _loggerRtcpSr = new Log("packetizer:rtcp-sr");
 
     private _ssrc: number;
@@ -46,13 +44,11 @@ export class BaseMediaPacketizer {
         this._srInterval = 1000;
     }
 
-    public get ssrc(): number | undefined
-    {
+    public get ssrc(): number | undefined {
         return this._ssrc;
     }
 
-    public set ssrc(value: number)
-    {
+    public set ssrc(value: number) {
         this._ssrc = value;
         this._totalBytes = this._totalPackets = 0;
     }
@@ -60,13 +56,11 @@ export class BaseMediaPacketizer {
     /**
      * The interval between 2 consecutive RTCP Sender Report packets in ms
      */
-    public get srInterval(): number
-    {
+    public get srInterval(): number {
         return this._srInterval;
     }
 
-    public set srInterval(interval: number)
-    {
+    public set srInterval(interval: number) {
         this._srInterval = interval;
     }
 
@@ -76,9 +70,8 @@ export class BaseMediaPacketizer {
     }
 
     public async onFrameSent(packetsSent: number, bytesSent: number, frametime: number): Promise<void> {
-        
-        if (this._mediaUdp.mediaConnection.streamer.opts.rtcpSenderReportEnabled)
-        {
+
+        if (this._mediaUdp.mediaConnection.streamer.opts.rtcpSenderReportEnabled) {
             this._totalPackets = this._totalPackets + packetsSent;
             this._totalBytes = (this._totalBytes + bytesSent) % max_int32bit;
 
@@ -86,8 +79,7 @@ export class BaseMediaPacketizer {
              * Not using modulo here, since the timestamp might not be an exact
              * multiple of the interval
              */
-            if (Math.floor(this._currentMediaTimestamp / this._srInterval) - Math.floor(this._lastRtcpTime / this._srInterval) > 0)
-            {
+            if (Math.floor(this._currentMediaTimestamp / this._srInterval) - Math.floor(this._lastRtcpTime / this._srInterval) > 0) {
                 const senderReport = await this.makeRtcpSenderReport();
                 this._mediaUdp.sendPacket(senderReport);
                 this._lastRtcpTime = this._currentMediaTimestamp;
@@ -112,16 +104,16 @@ export class BaseMediaPacketizer {
     public partitionDataMTUSizedChunks(data: Buffer): Buffer[] {
         let i = 0;
         let len = data.length;
-    
+
         const out = [];
-    
+
         while (len > 0) {
             const size = Math.min(len, this._mtu);
             out.push(data.subarray(i, i + size));
             len -= size;
             i += size;
         }
-    
+
         return out;
     }
 
@@ -136,12 +128,12 @@ export class BaseMediaPacketizer {
 
     public makeRtpHeader(isLastPacket = true): Buffer {
         const packetHeader = Buffer.alloc(12);
-    
+
         packetHeader[0] = 2 << 6 | ((this._extensionEnabled ? 1 : 0) << 4); // set version and flags
         packetHeader[1] = this._payloadType; // set packet payload
         if (isLastPacket)
             packetHeader[1] |= 0b10000000; // mark M bit if last frame
-    
+
         packetHeader.writeUIntBE(this.getNewSequence(), 2, 2);
         packetHeader.writeUIntBE(Math.round(this._timestamp), 4, 4);
         packetHeader.writeUIntBE(this._ssrc, 8, 4);
@@ -185,61 +177,48 @@ export class BaseMediaPacketizer {
      * https://www.rfc-editor.org/rfc/rfc5285#section-4.2
      * @returns extension header
      */
-    public createExtensionHeader(extensions: { id: number, len: number, val: number}[]): Buffer {
+    public static createExtensionHeader(count: number): Buffer {
         /**
          *  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
             +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
             |      defined by profile       |           length              |
             +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
         */
-            const profile = Buffer.alloc(4);
-            profile[0] = 0xBE;
-            profile[1] = 0xDE;
-            profile.writeInt16BE(extensions.length, 2); // extension count
+        const profile = Buffer.allocUnsafe(4);
+        profile[0] = 0xBE;
+        profile[1] = 0xDE;
+        profile.writeInt16BE(count, 2); // extension count
 
-            return profile
+        return profile
     }
 
     /**
-     * Creates a extension payload in one-byte format according to https://www.rfc-editor.org/rfc/rfc7941.html#section-4.1.1
-     * Discord seems to send this extension on every video packet. The extension ids for Discord can be found by connecting
-     * to their webrtc gateway using the webclient and the client will send an SDP offer containing it
-     * @returns extension payload
+     * Create a playoutDelay extension payload
+     * 
+     * https://webrtc.googlesource.com/src/+/refs/heads/main/docs/native-code/rtp-hdrext/playout-delay
      */
-    public createPlayoutDelayExtPayload(extensions: { id: number, len: number, val: number}[]): Buffer {
-        const extensionsData = [];
-        for(const ext of extensions){
-            /**
-             * EXTENSION DATA - each extension payload is 32 bits
-             */
-            const data = Buffer.alloc(4);
+    public static createPlayoutDelayExtPayload(min: number, max: number): Buffer {
+        const data = Buffer.allocUnsafe(4);
+        /**
+          *   0 1 2 3 4 5 6 7
+             +-+-+-+-+-+-+-+-+
+             |  ID   |  len  |
+             +-+-+-+-+-+-+-+-+
 
-            // https://webrtc.googlesource.com/src/+/refs/heads/main/docs/native-code/rtp-hdrext/playout-delay
-            if(ext.id === 5) {
-                /**
-                 *  0 1 2 3 4 5 6 7
-                    +-+-+-+-+-+-+-+-+
-                    |  ID   |  len  |
-                    +-+-+-+-+-+-+-+-+
+             where len = actual length - 1
+          */
+        data[0] = (5 << 4) | 2;
 
-                where len = actual length - 1
-                */
-                data[0] = (ext.id & 0b00001111) << 4;
-                data[0] |= ((ext.len - 1) & 0b00001111);
+        /** Specific to type playout-delay
+         *   0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3
+            +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+            |       MIN delay       |       MAX delay       |
+            +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+        */
+        const delay = (min & 0xFFF) << 12 || (max & 0xFFF);
+        data.writeUIntBE(delay, 1, 3);
 
-                /**  Specific to type playout-delay
-                 *  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4
-                    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-                    |       MIN delay       |       MAX delay       |
-                    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-                */
-                data.writeUIntBE(ext.val, 1, 2); // not quite but its 0 anyway
-            }
-
-            extensionsData.push(data);
-        }
-
-        return Buffer.concat(extensionsData)
+        return data;
     }
 
     /**
