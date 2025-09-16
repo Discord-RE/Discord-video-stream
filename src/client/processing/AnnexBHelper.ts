@@ -115,36 +115,8 @@ export const H265Helpers: AnnexBHelpers = {
 }
 
 export const startCode3 = Buffer.from([0, 0, 1]);
-export const startCode4 = Buffer.from([0, 0, 0, 1]);
 
-// Get individual NAL units from a length-prefixed NALU buffer
-export function splitNaluLengthPrefixed(frame: Buffer) {
-    const nalus = [];
-    let offset = 0;
-    while (offset < frame.length) {
-        const naluSize = frame.readUInt32BE(offset);
-        offset += 4;
-        const nalu = frame.subarray(offset, offset + naluSize);
-        nalus.push(nalu);
-        offset += nalu.length;
-    }
-    return nalus;
-}
-
-// Merge NAL units into a length-prefixed NALU buffer
-export function mergeNaluLengthPrefixed(nalus: Buffer[])
-{
-    const chunks = [];
-    for (const nalu of nalus)
-    {
-        const size = Buffer.allocUnsafe(4);
-        size.writeUInt32BE(nalu.length);
-        chunks.push(size, nalu);
-    }
-    return Buffer.concat(chunks);
-}
-
-export function splitNaluAnnexB(buf: Buffer)
+export function splitNalu(buf: Buffer)
 {
     let temp: Buffer | null = buf;
     const nalus: Buffer[] = [];
@@ -163,25 +135,4 @@ export function splitNaluAnnexB(buf: Buffer)
             nalus.push(nalu);
     }
     return nalus;
-}
-
-export function mergeNaluAnnexB(nalus: Buffer[])
-{
-    return Buffer.concat(
-        nalus.flatMap(nalu => [startCode3, nalu])
-    )
-}
-
-export function splitNalu(buf: Buffer)
-{
-    const isAnnexB = buf.subarray(0, 3).equals(startCode3) || buf.subarray(0, 4).equals(startCode4);
-    return {
-        isAnnexB,
-        nalus: isAnnexB ? splitNaluAnnexB(buf) : splitNaluLengthPrefixed(buf)
-    }
-}
-
-export function mergeNalu(nalus: Buffer[], annexB: boolean)
-{
-    return annexB ? mergeNaluAnnexB(nalus) : mergeNaluLengthPrefixed(nalus);
 }
