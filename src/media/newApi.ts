@@ -190,10 +190,12 @@ export function prepareStream(
 
     let isHttpUrl = false;
     let isHls = false;
+    let isSrt = false;
 
     if (typeof input === "string") {
         isHttpUrl = input.startsWith('http') || input.startsWith('https');
         isHls = input.includes('m3u');
+        isSrt = input.startsWith("srt://");
     }
 
     const output = new PassThrough();
@@ -226,6 +228,11 @@ export function prepareStream(
                 '-reconnect_delay_max 4294'
             ]);
         }
+    }
+
+    if (isSrt)
+    {
+        command.inputOption("-scan_all_pmts 0");
     }
 
     // general output options
