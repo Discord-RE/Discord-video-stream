@@ -11,8 +11,7 @@ import EventEmitter from "node:events";
 import type { Message, GatewayRequest, GatewayResponse } from "./VoiceMessageTypes.js";
 import type { Streamer } from "../Streamer.js";
 
-type VoiceConnectionStatus =
-{
+type VoiceConnectionStatus = {
     hasSession: boolean;
     hasToken: boolean;
     started: boolean;
@@ -130,7 +129,7 @@ export abstract class BaseMediaConnection extends EventEmitter {
         this.status.hasSession = true;
         this.start();
     }
-    
+
     setTokens(server: string, token: string): void {
         this.token = token;
         this.server = server;
@@ -153,7 +152,7 @@ export abstract class BaseMediaConnection extends EventEmitter {
                 followRedirects: true
             });
             this.ws.on("open", () => {
-                if(this.status.resuming) {
+                if (this.status.resuming) {
                     this.status.resuming = false;
                     this.resume();
                 } else {
@@ -195,8 +194,7 @@ export abstract class BaseMediaConnection extends EventEmitter {
 
     handleProtocolAck(d: Message.SelectProtocolAck): void {
         const secretKey = Buffer.from(d.secret_key);
-        switch (d.mode)
-        {
+        switch (d.mode) {
             case SupportedEncryptionModes.AES256:
                 this._transportEncryptor = new AES256TransportEncryptor(secretKey);
                 break;
@@ -250,10 +248,13 @@ export abstract class BaseMediaConnection extends EventEmitter {
             clearInterval(this.interval);
         }
         this.interval = setInterval(() => {
-            this.sendOpcode(VoiceOpCodes.HEARTBEAT, {
-                t: Date.now(),
-                seq_ack: this._sequenceNumber
-            });
+            try {
+                this.sendOpcode(VoiceOpCodes.HEARTBEAT, {
+                    t: Date.now(),
+                    seq_ack: this._sequenceNumber
+                });
+            }
+            catch { }
         }, interval);
     }
 
@@ -363,9 +364,9 @@ export abstract class BaseMediaConnection extends EventEmitter {
                 video_ssrc: videoSsrc,
                 rtx_ssrc: rtxSsrc,
                 streams: [
-                    { 
-                        type:"video",
-                        rid:"100",
+                    {
+                        type: "video",
+                        rid: "100",
                         ssrc: videoSsrc,
                         active: true,
                         quality: 100,
