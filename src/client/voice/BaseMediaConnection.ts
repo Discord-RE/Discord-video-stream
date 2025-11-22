@@ -1,4 +1,4 @@
-import { VoiceOpCodes } from "./VoiceOpCodes.js";
+import { VoiceOpCodes, VoiceOpCodesBinary } from "./VoiceOpCodes.js";
 import { MediaUdp } from "./MediaUdp.js";
 import {
     AES256TransportEncryptor,
@@ -6,6 +6,7 @@ import {
     type TransportEncryptor
 } from "../encryptor/TransportEncryptor.js";
 import { STREAMS_SIMULCAST, SupportedEncryptionModes } from "../../utils.js";
+import Davey from "@snazzah/davey"
 import WebSocket from 'ws';
 import EventEmitter from "node:events";
 import type { Message, GatewayRequest, GatewayResponse } from "./VoiceMessageTypes.js";
@@ -76,6 +77,12 @@ export abstract class BaseMediaConnection extends EventEmitter {
     private _streamer: Streamer;
     private _transportEncryptor?: TransportEncryptor;
     private _sequenceNumber = -1;
+
+    private _daveSession: Davey.DaveSession | undefined;
+    private _connectedUsers = new Set<string>();
+    private _daveProtocolVersion = 0;
+    private _davePendingTransitions = new Map<number, number>();
+    private _daveDowngraded = false;
 
     constructor(
         streamer: Streamer,
@@ -202,13 +209,58 @@ export abstract class BaseMediaConnection extends EventEmitter {
                 this._transportEncryptor = new Chacha20TransportEncryptor(secretKey);
                 break;
         }
+        this._daveProtocolVersion = d.dave_protocol_version;
+        this.initDave();
         this.emit("select_protocol_ack");
+    }
+
+    initDave() {
+        if (this._daveProtocolVersion) {
+            if (this._daveSession)
+                this._daveSession.reinit(this._daveProtocolVersion, this.botId, this.channelId);
+            else
+                this._daveSession = new Davey.DAVESession(this._daveProtocolVersion, this.botId, this.channelId);
+        }
+        else if (this._daveSession) {
+            this._daveSession.reset();
+            this._daveSession.setPassthroughMode(true, 10);
+        }
+    }
+
+    processInvalidCommit(transitionId: number) {
+        this.sendOpcode(VoiceOpCodes.MLS_INVALID_COMMIT_WELCOME, { transition_id: transitionId });
+        this.initDave();
+    }
+
+    executePendingTransition(transitionId: number) {
+        const newVersion = this._davePendingTransitions.get(transitionId);
+        if (newVersion === undefined) {
+            // Log error in the future
+            return;
+        }
+        const oldVersion = this._daveProtocolVersion;
+        this._daveProtocolVersion = newVersion;
+
+        if (oldVersion !== newVersion && newVersion === 0) {
+            // Downgraded
+            this._daveDowngraded = true;
+        }
+        else if (transitionId > 0 && this._daveDowngraded) {
+            this._daveDowngraded = false;
+            this._daveSession?.setPassthroughMode(true, 10);
+        }
+
+        this._davePendingTransitions.delete(transitionId);
     }
 
     setupEvents(): void {
         this.ws?.on('message', (data, isBinary) => {
-            if (isBinary)
-                return;
+            if (isBinary) {
+                if (data instanceof ArrayBuffer)
+                    this.handleBinaryMessages(Buffer.from(data))
+                else if (Array.isArray(data))
+                    this.handleBinaryMessages(Buffer.concat(data))
+            }
             const { op, d, seq } = JSON.parse(data.toString()) as GatewayResponse;
             if (seq)
                 this._sequenceNumber = seq;
@@ -237,10 +289,97 @@ export abstract class BaseMediaConnection extends EventEmitter {
                 this.status.started = true;
                 this.udp.ready = true;
             }
+            else if (op === VoiceOpCodes.CLIENTS_CONNECT) {
+                d.user_ids.forEach(id => this._connectedUsers.add(id));
+            }
+            else if (op === VoiceOpCodes.CLIENT_DISCONNECT) {
+                this._connectedUsers.delete(d.user_id)
+            }
+            else if (op === VoiceOpCodes.DAVE_PREPARE_TRANSITION) {
+                this._davePendingTransitions.set(d.transition_id, d.protocol_version);
+                if (d.transition_id === 0) {
+                    this.executePendingTransition(d.transition_id);
+                }
+                else {
+                    if (d.protocol_version === 0)
+                        this._daveSession?.setPassthroughMode(true, 120);
+                    this.sendOpcode(VoiceOpCodes.DAVE_TRANSITION_READY, { transition_id: d.transition_id });
+                }
+            }
+            else if (op === VoiceOpCodes.DAVE_EXECUTE_TRANSITION) {
+                this.executePendingTransition(d.transition_id);
+            }
+            else if (op === VoiceOpCodes.DAVE_PREPARE_EPOCH) {
+                if (d.epoch === 1) {
+                    this._daveProtocolVersion = d.protocol_version;
+                    this.initDave();
+                }
+            }
             else {
                 //console.log("unhandled voice event", {op, d});
             }
         });
+    }
+
+    handleBinaryMessages(msg: Buffer) {
+        this._sequenceNumber = msg.readUint16BE(0);
+        const op = msg.readUint8(2);
+        switch (op) {
+            case VoiceOpCodesBinary.MLS_EXTERNAL_SENDER:
+                {
+                    this._daveSession?.setExternalSender(msg.subarray(3));
+                    break;
+                }
+            case VoiceOpCodesBinary.MLS_PROPOSALS:
+                {
+                    const optype = msg.readUint8(3);
+                    const { commit, welcome } = this._daveSession!.processProposals(
+                        optype, msg.subarray(4), [...this._connectedUsers]
+                    );
+                    if (commit) {
+                        this.sendOpcodeBinary(
+                            VoiceOpCodesBinary.MLS_COMMIT_WELCOME, welcome ? Buffer.concat([commit, welcome]) : commit
+                        );
+                    }
+                    break;
+                }
+            case VoiceOpCodesBinary.MLS_ANNOUNCE_COMMIT_TRANSITION:
+                {
+                    const transitionId = msg.readUInt16BE(3);
+                    try {
+                        this._daveSession!.processCommit(msg.subarray(5));
+                        if (!transitionId) {
+                            this._davePendingTransitions.set(transitionId, this._daveProtocolVersion);
+                            this.sendOpcode(VoiceOpCodes.DAVE_TRANSITION_READY, { transition_id: transitionId });
+                        }
+                    }
+                    catch (e) {
+                        this.processInvalidCommit(transitionId);
+                    }
+                }
+            case VoiceOpCodesBinary.MLS_WELCOME:
+                {
+                    const transitionId = msg.readUInt16BE(3);
+                    try {
+                        this._daveSession!.processWelcome(msg.subarray(5));
+                        if (!transitionId) {
+                            this._davePendingTransitions.set(transitionId, this._daveProtocolVersion);
+                            this.sendOpcode(VoiceOpCodes.DAVE_TRANSITION_READY, { transition_id: transitionId });
+                        }
+                    }
+                    catch (e) {
+                        this.processInvalidCommit(transitionId);
+                    }
+                }
+        }
+    }
+
+    public get daveReady() {
+        return this._daveProtocolVersion && this._daveSession?.ready
+    }
+
+    public get daveSession() {
+        return this._daveSession;
     }
 
     setupHeartbeat(interval: number): void {
@@ -259,10 +398,20 @@ export abstract class BaseMediaConnection extends EventEmitter {
     }
 
     sendOpcode<T extends GatewayRequest>(code: T["op"], data: T["d"]): void {
-        this.ws?.send(JSON.stringify({
+        if (this.ws?.readyState !== WebSocket.OPEN)
+            return;
+        this.ws.send(JSON.stringify({
             op: code,
             d: data
         }));
+    }
+    sendOpcodeBinary(code: VoiceOpCodesBinary, data: Buffer) {
+        if (this.ws?.readyState !== WebSocket.OPEN)
+            return;
+        const buf = Buffer.allocUnsafe(data.length + 1);
+        buf.writeUInt8(code);
+        data.copy(buf, 1);
+        this.ws.send(buf);
     }
 
     /*
@@ -281,7 +430,8 @@ export abstract class BaseMediaConnection extends EventEmitter {
             session_id: this.session_id,
             token: this.token,
             video: true,
-            streams: STREAMS_SIMULCAST
+            streams: STREAMS_SIMULCAST,
+            max_dave_protocol_version: Davey.DAVE_PROTOCOL_VERSION ?? 0,
         });
     }
 

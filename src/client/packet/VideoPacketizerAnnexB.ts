@@ -7,6 +7,7 @@ import {
 } from "../processing/AnnexBHelper.js";
 import { splitNalu } from "../processing/AnnexBHelper.js";
 import { CodecPayloadType } from "../voice/BaseMediaConnection.js";
+import { MediaType, Codec } from "@snazzah/davey";
 
 /**
  * Annex B format
@@ -209,6 +210,13 @@ export class VideoPacketizerH264 extends VideoPacketizerAnnexB {
 
         return fuPayloadHeader;
     }
+
+    public override async encryptData(plaintext: Buffer, additionalData: Buffer): Promise<[Buffer, Buffer]> {
+        const { daveReady, daveSession } = this.mediaUdp.mediaConnection;
+        if (daveReady)
+            plaintext = daveSession!.encrypt(MediaType.VIDEO, Codec.H264, plaintext);
+        return super.encryptData(plaintext, additionalData);
+    }
 }
 
 export class VideoPacketizerH265 extends VideoPacketizerAnnexB {
@@ -262,5 +270,12 @@ export class VideoPacketizerH265 extends VideoPacketizerAnnexB {
         }
 
         return fuIndicatorHeader;
+    }
+
+    public override async encryptData(plaintext: Buffer, additionalData: Buffer): Promise<[Buffer, Buffer]> {
+        const { daveReady, daveSession } = this.mediaUdp.mediaConnection;
+        if (daveReady)
+            plaintext = daveSession!.encrypt(MediaType.VIDEO, Codec.H265, plaintext);
+        return super.encryptData(plaintext, additionalData);
     }
 }

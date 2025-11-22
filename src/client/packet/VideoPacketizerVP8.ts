@@ -2,6 +2,7 @@ import type { MediaUdp } from "../voice/MediaUdp.js";
 import { max_int16bit } from "../../utils.js";
 import { BaseMediaPacketizer } from "./BaseMediaPacketizer.js";
 import { CodecPayloadType } from "../voice/BaseMediaConnection.js";
+import { MediaType, Codec } from "@snazzah/davey";
 
 /**
  * VP8 payload format
@@ -34,12 +35,12 @@ export class VideoPacketizerVP8 extends BaseMediaPacketizer {
     }
 
     public async createPacket(chunk: Buffer, isLastPacket = true, isFirstPacket = true): Promise<Buffer> {
-        if(chunk.length > this.mtu) throw Error('error packetizing video frame: frame is larger than mtu');
+        if (chunk.length > this.mtu) throw Error('error packetizing video frame: frame is larger than mtu');
 
         const packetHeader = Buffer.concat([this.makeRtpHeader(isLastPacket), BaseMediaPacketizer.extensionHeader]);
 
         const packetData = Buffer.concat([...BaseMediaPacketizer.extensions, this.makeChunk(chunk, isFirstPacket)]);
-    
+
         // nonce buffer used for encryption. 4 bytes are appended to end of packet
         const [ciphertext, nonceBuffer] = await this.encryptData(packetData, packetHeader);
         return Buffer.concat([packetHeader, ciphertext, nonceBuffer.subarray(0, 4)]);
@@ -55,19 +56,26 @@ export class VideoPacketizerVP8 extends BaseMediaPacketizer {
     private makeChunk(frameData: Buffer, isFirstPacket: boolean): Buffer {
         // vp8 payload descriptor
         const payloadDescriptorBuf = Buffer.alloc(2);
-    
+
         payloadDescriptorBuf[0] = 0x80;
         payloadDescriptorBuf[1] = 0x80;
         if (isFirstPacket) {
             payloadDescriptorBuf[0] |= 0b00010000; // mark S bit, indicates start of frame
         }
-    
+
         // vp8 pictureid payload extension
         const pictureIdBuf = Buffer.alloc(2);
-    
+
         pictureIdBuf.writeUIntBE(this._pictureId, 0, 2);
         pictureIdBuf[0] |= 0b10000000;
-    
+
         return Buffer.concat([payloadDescriptorBuf, pictureIdBuf, frameData]);
+    }
+
+    public override async encryptData(plaintext: Buffer, additionalData: Buffer): Promise<[Buffer, Buffer]> {
+        const { daveReady, daveSession } = this.mediaUdp.mediaConnection;
+        if (daveReady)
+            plaintext = daveSession!.encrypt(MediaType.VIDEO, Codec.VP8, plaintext);
+        return super.encryptData(plaintext, additionalData);
     }
 }
