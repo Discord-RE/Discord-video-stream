@@ -260,6 +260,7 @@ export abstract class BaseMediaConnection extends EventEmitter {
                     this.handleBinaryMessages(Buffer.from(data))
                 else if (Array.isArray(data))
                     this.handleBinaryMessages(Buffer.concat(data))
+                return;
             }
             const { op, d, seq } = JSON.parse(data.toString()) as GatewayResponse;
             if (seq)
