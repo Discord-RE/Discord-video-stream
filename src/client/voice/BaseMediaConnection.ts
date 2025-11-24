@@ -360,7 +360,7 @@ export abstract class BaseMediaConnection extends EventEmitter {
                     const transitionId = msg.readUInt16BE(3);
                     try {
                         this._daveSession!.processCommit(msg.subarray(5));
-                        if (!transitionId) {
+                        if (transitionId) {
                             this._davePendingTransitions.set(transitionId, this._daveProtocolVersion);
                             this.sendOpcode(VoiceOpCodes.DAVE_TRANSITION_READY, { transition_id: transitionId });
                         }
@@ -376,7 +376,7 @@ export abstract class BaseMediaConnection extends EventEmitter {
                     const transitionId = msg.readUInt16BE(3);
                     try {
                         this._daveSession!.processWelcome(msg.subarray(5));
-                        if (!transitionId) {
+                        if (transitionId) {
                             this._davePendingTransitions.set(transitionId, this._daveProtocolVersion);
                             this.sendOpcode(VoiceOpCodes.DAVE_TRANSITION_READY, { transition_id: transitionId });
                         }
