@@ -126,6 +126,8 @@ export abstract class BaseMediaConnection extends EventEmitter {
         return this._streamer;
     }
 
+    public abstract get daveChannelId(): string;
+
     stop(): void {
         this.interval && clearInterval(this.interval);
         this.status.started = false;
@@ -221,13 +223,13 @@ export abstract class BaseMediaConnection extends EventEmitter {
         if (this._daveProtocolVersion) {
             if (this._daveSession)
             {
-                this._daveSession.reinit(this._daveProtocolVersion, this.botId, this.channelId);
-                this._loggerDave.debug(`Reinitialized DAVE`, { user_id: this.botId, channel_id: this.channelId });
+                this._daveSession.reinit(this._daveProtocolVersion, this.botId, this.daveChannelId);
+                this._loggerDave.debug(`Reinitialized DAVE`, { user_id: this.botId, channel_id: this.daveChannelId });
             }
             else
             {
-                this._daveSession = new Davey.DAVESession(this._daveProtocolVersion, this.botId, this.channelId);
-                this._loggerDave.debug(`Initialized DAVE`, { user_id: this.botId, channel_id: this.channelId });
+                this._daveSession = new Davey.DAVESession(this._daveProtocolVersion, this.botId, this.daveChannelId);
+                this._loggerDave.debug(`Initialized DAVE`, { user_id: this.botId, channel_id: this.daveChannelId });
             }
             this.sendOpcodeBinary(VoiceOpCodesBinary.MLS_KEY_PACKAGE, this._daveSession.getSerializedKeyPackage());
         }
