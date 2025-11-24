@@ -1,3 +1,4 @@
+import { Log } from "debug-level";
 import { VoiceOpCodes, VoiceOpCodesBinary } from "./VoiceOpCodes.js";
 import { MediaUdp } from "./MediaUdp.js";
 import {
@@ -84,6 +85,7 @@ export abstract class BaseMediaConnection extends EventEmitter {
     private _davePendingTransitions = new Map<number, number>();
     private _daveDowngraded = false;
 
+    private _loggerDave = new Log("conn:dave");
     constructor(
         streamer: Streamer,
         guildId: string | null,
@@ -220,6 +222,7 @@ export abstract class BaseMediaConnection extends EventEmitter {
                 this._daveSession.reinit(this._daveProtocolVersion, this.botId, this.channelId);
             else
                 this._daveSession = new Davey.DAVESession(this._daveProtocolVersion, this.botId, this.channelId);
+            this.sendOpcodeBinary(VoiceOpCodesBinary.MLS_KEY_PACKAGE, this._daveSession.getSerializedKeyPackage());
         }
         else if (this._daveSession) {
             this._daveSession.reset();
@@ -228,6 +231,7 @@ export abstract class BaseMediaConnection extends EventEmitter {
     }
 
     processInvalidCommit(transitionId: number) {
+        this._loggerDave.debug("Invalid commit received, reinitializing DAVE", { transitionId });
         this.sendOpcode(VoiceOpCodes.MLS_INVALID_COMMIT_WELCOME, { transition_id: transitionId });
         this.initDave();
     }
@@ -235,7 +239,7 @@ export abstract class BaseMediaConnection extends EventEmitter {
     executePendingTransition(transitionId: number) {
         const newVersion = this._davePendingTransitions.get(transitionId);
         if (newVersion === undefined) {
-            // Log error in the future
+            this._loggerDave.error("Unrecognized transition ID", { transitionId });
             return;
         }
         const oldVersion = this._daveProtocolVersion;
@@ -244,13 +248,16 @@ export abstract class BaseMediaConnection extends EventEmitter {
         if (oldVersion !== newVersion && newVersion === 0) {
             // Downgraded
             this._daveDowngraded = true;
+            this._loggerDave.debug("Downgraded to non-E2E voice call");
         }
         else if (transitionId > 0 && this._daveDowngraded) {
             this._daveDowngraded = false;
             this._daveSession?.setPassthroughMode(true, 10);
+            this._loggerDave.debug("Upgraded to E2E voice call");
         }
 
         this._davePendingTransitions.delete(transitionId);
+        this._loggerDave.debug(`Pending transition ID ${transitionId} executed`, { transitionId });
     }
 
     setupEvents(): void {
@@ -297,6 +304,7 @@ export abstract class BaseMediaConnection extends EventEmitter {
                 this._connectedUsers.delete(d.user_id)
             }
             else if (op === VoiceOpCodes.DAVE_PREPARE_TRANSITION) {
+                this._loggerDave.debug("Preparing for DAVE transition", d);
                 this._davePendingTransitions.set(d.transition_id, d.protocol_version);
                 if (d.transition_id === 0) {
                     this.executePendingTransition(d.transition_id);
@@ -311,6 +319,7 @@ export abstract class BaseMediaConnection extends EventEmitter {
                 this.executePendingTransition(d.transition_id);
             }
             else if (op === VoiceOpCodes.DAVE_PREPARE_EPOCH) {
+                this._loggerDave.debug("Preparing for DAVE epoch", d);
                 if (d.epoch === 1) {
                     this._daveProtocolVersion = d.protocol_version;
                     this.initDave();
@@ -329,6 +338,7 @@ export abstract class BaseMediaConnection extends EventEmitter {
             case VoiceOpCodesBinary.MLS_EXTERNAL_SENDER:
                 {
                     this._daveSession?.setExternalSender(msg.subarray(3));
+                    this._loggerDave.debug("Set MLS external sender");
                     break;
                 }
             case VoiceOpCodesBinary.MLS_PROPOSALS:
@@ -342,6 +352,7 @@ export abstract class BaseMediaConnection extends EventEmitter {
                             VoiceOpCodesBinary.MLS_COMMIT_WELCOME, welcome ? Buffer.concat([commit, welcome]) : commit
                         );
                     }
+                    this._loggerDave.debug("Processed MLS proposal");
                     break;
                 }
             case VoiceOpCodesBinary.MLS_ANNOUNCE_COMMIT_TRANSITION:
@@ -353,8 +364,10 @@ export abstract class BaseMediaConnection extends EventEmitter {
                             this._davePendingTransitions.set(transitionId, this._daveProtocolVersion);
                             this.sendOpcode(VoiceOpCodes.DAVE_TRANSITION_READY, { transition_id: transitionId });
                         }
+                        this._loggerDave.debug("MLS commit processed", { transitionId });
                     }
                     catch (e) {
+                        this._loggerDave.debug("MLS commit errored", e);
                         this.processInvalidCommit(transitionId);
                     }
                 }
@@ -367,8 +380,10 @@ export abstract class BaseMediaConnection extends EventEmitter {
                             this._davePendingTransitions.set(transitionId, this._daveProtocolVersion);
                             this.sendOpcode(VoiceOpCodes.DAVE_TRANSITION_READY, { transition_id: transitionId });
                         }
+                        this._loggerDave.debug("MLS welcome processed", { transitionId });
                     }
                     catch (e) {
+                        this._loggerDave.debug("MLS welcome errored", e);
                         this.processInvalidCommit(transitionId);
                     }
                 }
