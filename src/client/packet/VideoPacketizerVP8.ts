@@ -22,6 +22,9 @@ export class VideoPacketizerVP8 extends BaseMediaPacketizer {
 
     public override async sendFrame(frame: Buffer, frametime: number): Promise<void> {
         super.sendFrame(frame, frametime);
+        const { daveReady, daveSession } = this.mediaUdp.mediaConnection;
+        if (daveReady)
+            frame = daveSession!.encrypt(MediaType.VIDEO, Codec.VP8, frame);
         const data = this.partitionDataMTUSizedChunks(frame);
 
         let bytesSent = 0;
@@ -70,12 +73,5 @@ export class VideoPacketizerVP8 extends BaseMediaPacketizer {
         pictureIdBuf[0] |= 0b10000000;
 
         return Buffer.concat([payloadDescriptorBuf, pictureIdBuf, frameData]);
-    }
-
-    public override async encryptData(plaintext: Buffer, additionalData: Buffer): Promise<[Buffer, Buffer]> {
-        const { daveReady, daveSession } = this.mediaUdp.mediaConnection;
-        if (daveReady)
-            plaintext = daveSession!.encrypt(MediaType.VIDEO, Codec.VP8, plaintext);
-        return super.encryptData(plaintext, additionalData);
     }
 }

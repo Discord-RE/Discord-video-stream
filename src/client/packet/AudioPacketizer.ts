@@ -9,6 +9,9 @@ export class AudioPacketizer extends BaseMediaPacketizer {
 
     public override async sendFrame(frame: Buffer, frametime: number): Promise<void> {
         super.sendFrame(frame, frametime);
+        const { daveReady, daveSession } = this.mediaUdp.mediaConnection;
+        if (daveReady)
+            frame = daveSession!.encryptOpus(frame);
         const packet = await this.createPacket(frame);
         this.mediaUdp.sendPacket(packet);
         this.onFrameSent(packet.length, frametime);
@@ -24,12 +27,5 @@ export class AudioPacketizer extends BaseMediaPacketizer {
     public override async onFrameSent(bytesSent: number, frametime: number): Promise<void> {
         await super.onFrameSent(1, bytesSent, frametime);
         this.incrementTimestamp(frametime * (48000 / 1000));
-    }
-
-    public override async encryptData(plaintext: Buffer, additionalData: Buffer): Promise<[Buffer, Buffer]> {
-        const { daveReady, daveSession } = this.mediaUdp.mediaConnection;
-        if (daveReady)
-            plaintext = daveSession!.encryptOpus(plaintext);
-        return super.encryptData(plaintext, additionalData);
     }
 }

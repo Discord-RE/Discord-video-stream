@@ -160,6 +160,12 @@ export class VideoPacketizerH264 extends VideoPacketizerAnnexB {
     constructor(connection: MediaUdp, ssrc: number) {
         super(connection, ssrc, CodecPayloadType.H264.payload_type, H264Helpers);
     }
+    public override async sendFrame(frame: Buffer, frametime: number): Promise<void> {
+        const { daveReady, daveSession } = this.mediaUdp.mediaConnection;
+        if (daveReady)
+            frame = daveSession!.encrypt(MediaType.VIDEO, Codec.H265, frame);
+        return super.sendFrame(frame, frametime);
+    }
     /**
      * The FU indicator octet has the following format:
         
@@ -210,18 +216,17 @@ export class VideoPacketizerH264 extends VideoPacketizerAnnexB {
 
         return fuPayloadHeader;
     }
-
-    public override async encryptData(plaintext: Buffer, additionalData: Buffer): Promise<[Buffer, Buffer]> {
-        const { daveReady, daveSession } = this.mediaUdp.mediaConnection;
-        if (daveReady)
-            plaintext = daveSession!.encrypt(MediaType.VIDEO, Codec.H264, plaintext);
-        return super.encryptData(plaintext, additionalData);
-    }
 }
 
 export class VideoPacketizerH265 extends VideoPacketizerAnnexB {
     constructor(connection: MediaUdp, ssrc: number) {
         super(connection, ssrc, CodecPayloadType.H265.payload_type, H265Helpers);
+    }
+    public override async sendFrame(frame: Buffer, frametime: number): Promise<void> {
+        const { daveReady, daveSession } = this.mediaUdp.mediaConnection;
+        if (daveReady)
+            frame = daveSession!.encrypt(MediaType.VIDEO, Codec.H265, frame);
+        return super.sendFrame(frame, frametime);
     }
     /**
      * The FU indicator octet has the following format:
@@ -270,12 +275,5 @@ export class VideoPacketizerH265 extends VideoPacketizerAnnexB {
         }
 
         return fuIndicatorHeader;
-    }
-
-    public override async encryptData(plaintext: Buffer, additionalData: Buffer): Promise<[Buffer, Buffer]> {
-        const { daveReady, daveSession } = this.mediaUdp.mediaConnection;
-        if (daveReady)
-            plaintext = daveSession!.encrypt(MediaType.VIDEO, Codec.H265, plaintext);
-        return super.encryptData(plaintext, additionalData);
     }
 }
