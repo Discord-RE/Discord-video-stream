@@ -220,9 +220,15 @@ export abstract class BaseMediaConnection extends EventEmitter {
     initDave() {
         if (this._daveProtocolVersion) {
             if (this._daveSession)
+            {
                 this._daveSession.reinit(this._daveProtocolVersion, this.botId, this.channelId);
+                this._loggerDave.debug(`Reinitialized DAVE`, { user_id: this.botId, channel_id: this.channelId });
+            }
             else
+            {
                 this._daveSession = new Davey.DAVESession(this._daveProtocolVersion, this.botId, this.channelId);
+                this._loggerDave.debug(`Initialized DAVE`, { user_id: this.botId, channel_id: this.channelId });
+            }
             this.sendOpcodeBinary(VoiceOpCodesBinary.MLS_KEY_PACKAGE, this._daveSession.getSerializedKeyPackage());
         }
         else if (this._daveSession) {
