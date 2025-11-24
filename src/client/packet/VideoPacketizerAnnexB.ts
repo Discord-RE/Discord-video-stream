@@ -163,7 +163,7 @@ export class VideoPacketizerH264 extends VideoPacketizerAnnexB {
     public override async sendFrame(frame: Buffer, frametime: number): Promise<void> {
         const { daveReady, daveSession } = this.mediaUdp.mediaConnection;
         if (daveReady)
-            frame = daveSession!.encrypt(MediaType.VIDEO, Codec.H265, frame);
+            frame = daveSession!.encrypt(MediaType.VIDEO, Codec.H264, frame);
         return super.sendFrame(frame, frametime);
     }
     /**
