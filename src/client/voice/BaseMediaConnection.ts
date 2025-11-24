@@ -264,7 +264,9 @@ export abstract class BaseMediaConnection extends EventEmitter {
     setupEvents(): void {
         this.ws?.on('message', (data, isBinary) => {
             if (isBinary) {
-                if (data instanceof ArrayBuffer)
+                if (data instanceof Buffer)
+                    this.handleBinaryMessages(data)
+                else if (data instanceof ArrayBuffer)
                     this.handleBinaryMessages(Buffer.from(data))
                 else if (Array.isArray(data))
                     this.handleBinaryMessages(Buffer.concat(data))
