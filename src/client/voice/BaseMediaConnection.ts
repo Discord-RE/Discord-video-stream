@@ -85,6 +85,7 @@ export abstract class BaseMediaConnection extends EventEmitter {
     private _davePendingTransitions = new Map<number, number>();
     private _daveDowngraded = false;
 
+    private _logger = new Log("conn");
     private _loggerDave = new Log("conn:dave");
     constructor(
         streamer: Streamer,
@@ -334,6 +335,7 @@ export abstract class BaseMediaConnection extends EventEmitter {
     handleBinaryMessages(msg: Buffer) {
         this._sequenceNumber = msg.readUint16BE(0);
         const op = msg.readUint8(2);
+        this._logger.trace(`Handling binary message with op ${op}`, { op })
         switch (op) {
             case VoiceOpCodesBinary.MLS_EXTERNAL_SENDER:
                 {
@@ -370,6 +372,7 @@ export abstract class BaseMediaConnection extends EventEmitter {
                         this._loggerDave.debug("MLS commit errored", e);
                         this.processInvalidCommit(transitionId);
                     }
+                    break;
                 }
             case VoiceOpCodesBinary.MLS_WELCOME:
                 {
@@ -386,6 +389,7 @@ export abstract class BaseMediaConnection extends EventEmitter {
                         this._loggerDave.debug("MLS welcome errored", e);
                         this.processInvalidCommit(transitionId);
                     }
+                    break;
                 }
         }
     }
