@@ -506,7 +506,7 @@ export async function playStream(
         streamer.signalVideo(true);
         stopStream = () => streamer.signalVideo(false);
     }
-    const packetizer = videoCodecMap[video.codec];
+    conn.setPacketizer(videoCodecMap[video.codec]);
     conn.mediaConnection.setSpeaking(true);
     const { width, height, frameRate } = mergedOptions;
     conn.mediaConnection.setVideoAttributes(true, {
