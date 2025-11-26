@@ -1,6 +1,6 @@
 import { Log } from "debug-level";
 import { max_int16bit, max_int32bit } from "../../utils.js";
-import { RtpHeader, Extension, RtpPacket, type MediaStreamTrack } from "werift";
+import { RtpHeader, Extension, RtpPacket, RtcpSrPacket, RtcpSenderInfo, type MediaStreamTrack } from "werift";
 import type { BaseMediaConnection } from "../voice/BaseMediaConnection.js";
 
 const ntpEpoch = new Date("Jan 01 1900 GMT").getTime();
@@ -65,30 +65,29 @@ export class BaseMediaPacketizer {
     }
 
     public async onFrameSent(packetsSent: number, bytesSent: number, frametime: number): Promise<void> {
+        // if (this._mediaConn.streamer.opts.rtcpSenderReportEnabled) {
+        //     this._totalPackets = this._totalPackets + packetsSent;
+        //     this._totalBytes = (this._totalBytes + bytesSent) % max_int32bit;
 
-        if (this._mediaUdp.mediaConnection.streamer.opts.rtcpSenderReportEnabled) {
-            this._totalPackets = this._totalPackets + packetsSent;
-            this._totalBytes = (this._totalBytes + bytesSent) % max_int32bit;
-
-            /**
-             * Not using modulo here, since the timestamp might not be an exact
-             * multiple of the interval
-             */
-            if (Math.floor(this._currentMediaTimestamp / this._srInterval) - Math.floor(this._lastRtcpTime / this._srInterval) > 0) {
-                const senderReport = await this.makeRtcpSenderReport();
-                this._mediaUdp.sendPacket(senderReport);
-                this._lastRtcpTime = this._currentMediaTimestamp;
-                this._loggerRtcpSr.debug({
-                    stats: {
-                        ssrc: this._ssrc,
-                        timestamp: this._timestamp,
-                        totalPackets: this._totalPackets,
-                        totalBytes: this._totalBytes
-                    }
-                }, `Sent RTCP sender report for SSRC ${this._ssrc}`);
-            }
-        }
-        this._currentMediaTimestamp += frametime;
+        //     /**
+        //      * Not using modulo here, since the timestamp might not be an exact
+        //      * multiple of the interval
+        //      */
+        //     if (Math.floor(this._currentMediaTimestamp / this._srInterval) - Math.floor(this._lastRtcpTime / this._srInterval) > 0) {
+        //         const senderReport = this.makeRtcpSenderReport();
+        //         this._track.onReceiveRtcp
+        //         this._lastRtcpTime = this._currentMediaTimestamp;
+        //         this._loggerRtcpSr.debug({
+        //             stats: {
+        //                 ssrc: this.ssrc,
+        //                 timestamp: this._timestamp,
+        //                 totalPackets: this._totalPackets,
+        //                 totalBytes: this._totalBytes
+        //             }
+        //         }, `Sent RTCP sender report for SSRC ${this.ssrc}`);
+        //     }
+        // }
+        // this._currentMediaTimestamp += frametime;
     }
 
     protected sendPacket(packet: RtpPacket) {
@@ -139,36 +138,23 @@ export class BaseMediaPacketizer {
         return header;
     }
 
-    public async makeRtcpSenderReport(): Promise<Buffer> {
-        const packetHeader = Buffer.allocUnsafe(8);
-
-        packetHeader[0] = 0x80; // RFC1889 v2, no padding, no reception report count
-        packetHeader[1] = 0xc8; // Type: Sender Report (200)
-
-        // Packet length (always 0x06 for some reason)
-        packetHeader[2] = 0x00;
-        packetHeader[3] = 0x06;
-        packetHeader.writeUInt32BE(this._ssrc, 4);
-
-        const senderReport = Buffer.allocUnsafe(20);
-
+    public makeRtcpSenderReport() {
         // Convert from floating point to 32.32 fixed point
         // Convert each part separately to reduce precision loss
         const ntpTimestamp = (this._lastPacketTime - ntpEpoch) / 1000;
         const ntpTimestampMsw = Math.floor(ntpTimestamp);
         const ntpTimestampLsw = Math.round((ntpTimestamp - ntpTimestampMsw) * max_int32bit);
-
-        senderReport.writeUInt32BE(ntpTimestampMsw, 0);
-        senderReport.writeUInt32BE(ntpTimestampLsw, 4);
-        senderReport.writeUInt32BE(Math.round(this._timestamp), 8);
-        senderReport.writeUInt32BE(this._totalPackets % max_int32bit, 12);
-        senderReport.writeUInt32BE(this._totalBytes, 16);
-
-        const [ciphertext, nonceBuffer] = await this.encryptData(senderReport, packetHeader);
-        return Buffer.concat([
-            packetHeader, ciphertext,
-            nonceBuffer.subarray(0, 4)
-        ]);
+        const senderInfo = new RtcpSenderInfo({
+            ntpTimestamp: BigInt(ntpTimestampMsw) << 32n + BigInt(ntpTimestampLsw),
+            rtpTimestamp: Math.round(this._timestamp),
+            octetCount: this._totalBytes,
+            packetCount: this._totalPackets % max_int32bit
+        })
+        const packet = new RtcpSrPacket({
+            ssrc: this.ssrc,
+            senderInfo
+        })
+        return packet;
     }
 
     /**
