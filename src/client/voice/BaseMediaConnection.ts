@@ -1,17 +1,14 @@
-import { Log } from "debug-level";
-import { VoiceOpCodes, VoiceOpCodesBinary } from "./VoiceOpCodes.js";
-import { MediaUdp } from "./MediaUdp.js";
-import {
-    AES256TransportEncryptor,
-    Chacha20TransportEncryptor,
-    type TransportEncryptor
-} from "../encryptor/TransportEncryptor.js";
-import { STREAMS_SIMULCAST, SupportedEncryptionModes } from "../../utils.js";
 import Davey from "@snazzah/davey"
-import WebSocket from 'ws';
 import EventEmitter from "node:events";
+import WebSocket from 'ws';
+import { Log } from "debug-level";
+import { v4 as uuidv4 } from "uuid";
+import { WebRtcConnWrapper } from "./WebRtcWrapper.js";
+import { VoiceOpCodes, VoiceOpCodesBinary } from "./VoiceOpCodes.js";
+import { STREAMS_SIMULCAST, SupportedEncryptionModes } from "../../utils.js";
 import type { Message, GatewayRequest, GatewayResponse } from "./VoiceMessageTypes.js";
 import type { Streamer } from "../Streamer.js";
+
 
 type VoiceConnectionStatus = {
     hasSession: boolean;
@@ -42,41 +39,41 @@ export type VideoAttributes = {
 
 export const CodecPayloadType = {
     "opus": {
-        name: "opus", type: "audio", priority: 1000, payload_type: 120
+        name: "opus", type: "audio", clockRate: 48000, priority: 1000, payload_type: 120
     },
     "H264": {
-        name: "H264", type: "video", priority: 1000, payload_type: 101, rtx_payload_type: 102, encode: true, decode: true
+        name: "H264", type: "video", clockRate: 90000, priority: 1000, payload_type: 101, rtx_payload_type: 102, encode: true, decode: true
     },
     "H265": {
-        name: "H265", type: "video", priority: 1000, payload_type: 103, rtx_payload_type: 104, encode: true, decode: true
+        name: "H265", type: "video", clockRate: 90000, priority: 1000, payload_type: 103, rtx_payload_type: 104, encode: true, decode: true
     },
     "VP8": {
-        name: "VP8", type: "video", priority: 1000, payload_type: 105, rtx_payload_type: 106, encode: true, decode: true
+        name: "VP8", type: "video", clockRate: 90000, priority: 1000, payload_type: 105, rtx_payload_type: 106, encode: true, decode: true
     },
     "VP9": {
-        name: "VP9", type: "video", priority: 1000, payload_type: 107, rtx_payload_type: 108, encode: true, decode: true
+        name: "VP9", type: "video", clockRate: 90000, priority: 1000, payload_type: 107, rtx_payload_type: 108, encode: true, decode: true
     },
     "AV1": {
-        name: "AV1", type: "video", priority: 1000, payload_type: 109, rtx_payload_type: 110, encode: true, decode: true
+        name: "AV1", type: "video", clockRate: 90000, priority: 1000, payload_type: 109, rtx_payload_type: 110, encode: true, decode: true
     }
 } as const;
 
 export abstract class BaseMediaConnection extends EventEmitter {
     private interval: NodeJS.Timeout | null = null;
-    public udp: MediaUdp;
     public guildId: string | null = null;
     public channelId: string;
     public botId: string;
     public ws: WebSocket | null = null;
-    public ready: (udp: MediaUdp) => void;
     public status: VoiceConnectionStatus;
     public server: string | null = null; //websocket url
     public token: string | null = null;
     public session_id: string | null = null;
 
-    public webRtcParams: WebRtcParameters | null = null;
+    private _webRtcConn;
+    private _webRtcParams: WebRtcParameters | null = null;
+    public ready: (conn: WebRtcConnWrapper) => void;
+
     private _streamer: Streamer;
-    private _transportEncryptor?: TransportEncryptor;
     private _sequenceNumber = -1;
 
     private _daveSession: Davey.DaveSession | undefined;
@@ -92,9 +89,10 @@ export abstract class BaseMediaConnection extends EventEmitter {
         guildId: string | null,
         botId: string,
         channelId: string,
-        callback: (udp: MediaUdp) => void
+        callback: (conn: WebRtcConnWrapper) => void
     ) {
         super();
+        this._webRtcConn = new WebRtcConnWrapper(this);
         this._streamer = streamer;
         this.status = {
             hasSession: false,
@@ -102,9 +100,6 @@ export abstract class BaseMediaConnection extends EventEmitter {
             started: false,
             resuming: false
         }
-
-        // make udp client
-        this.udp = new MediaUdp(this);
 
         this.guildId = guildId;
         this.channelId = channelId;
@@ -118,8 +113,12 @@ export abstract class BaseMediaConnection extends EventEmitter {
         return this.guildId ? "guild" : "call";
     }
 
-    public get transportEncryptor() {
-        return this._transportEncryptor;
+    public get webRtcConn() {
+        return this._webRtcConn;
+    }
+
+    public get webRtcParams() {
+        return this._webRtcParams;
     }
 
     public get streamer() {
@@ -129,10 +128,7 @@ export abstract class BaseMediaConnection extends EventEmitter {
     public abstract get daveChannelId(): string;
 
     stop(): void {
-        this.interval && clearInterval(this.interval);
-        this.status.started = false;
         this.ws?.close();
-        this.udp?.stop();
     }
 
     setSession(session_id: string): void {
@@ -177,8 +173,9 @@ export abstract class BaseMediaConnection extends EventEmitter {
             this.ws.on("close", (code) => {
                 const wasStarted = this.status.started;
 
+                this.interval && clearInterval(this.interval);
                 this.status.started = false;
-                this.udp.ready = false;
+                this._webRtcConn?.close();
 
                 const canResume = code === 4_015 || code < 4_000;
 
@@ -194,7 +191,7 @@ export abstract class BaseMediaConnection extends EventEmitter {
     handleReady(d: Message.Ready): void {
         // we hardcoded the STREAMS_SIMULCAST, which will always be array of 1
         const stream = d.streams[0];
-        this.webRtcParams = {
+        this._webRtcParams = {
             address: d.ip,
             port: d.port,
             audioSsrc: d.ssrc,
@@ -204,16 +201,13 @@ export abstract class BaseMediaConnection extends EventEmitter {
         }
     }
 
-    handleProtocolAck(d: Message.SelectProtocolAck): void {
-        const secretKey = Buffer.from(d.secret_key);
-        switch (d.mode) {
-            case SupportedEncryptionModes.AES256:
-                this._transportEncryptor = new AES256TransportEncryptor(secretKey);
-                break;
-            case SupportedEncryptionModes.XCHACHA20:
-                this._transportEncryptor = new Chacha20TransportEncryptor(secretKey);
-                break;
-        }
+    async handleProtocolAck(d: Message.SelectProtocolAck) {
+        if (!("sdp" in d))
+            throw new Error("Only WebRTC connections are allowed");
+        await this._webRtcConn.webRtcConn.setRemoteDescription({
+            sdp: d.sdp,
+            type: "answer"
+        })
         this._daveProtocolVersion = d.dave_protocol_version;
         this.initDave();
         this.emit("select_protocol_ack");
@@ -221,13 +215,11 @@ export abstract class BaseMediaConnection extends EventEmitter {
 
     initDave() {
         if (this._daveProtocolVersion) {
-            if (this._daveSession)
-            {
+            if (this._daveSession) {
                 this._daveSession.reinit(this._daveProtocolVersion, this.botId, this.daveChannelId);
                 this._loggerDave.debug(`Reinitialized DAVE`, { user_id: this.botId, channel_id: this.daveChannelId });
             }
-            else
-            {
+            else {
                 this._daveSession = new Davey.DAVESession(this._daveProtocolVersion, this.botId, this.daveChannelId);
                 this._loggerDave.debug(`Initialized DAVE`, { user_id: this.botId, channel_id: this.daveChannelId });
             }
@@ -286,7 +278,7 @@ export abstract class BaseMediaConnection extends EventEmitter {
 
             if (op === VoiceOpCodes.READY) { // ready
                 this.handleReady(d);
-                this.sendVoice().then(() => this.ready(this.udp));
+                this.setProtocols().then(() => this.ready(this._webRtcConn));
                 this.setVideoAttributes(false);
             }
             else if (op >= 4000) {
@@ -306,7 +298,6 @@ export abstract class BaseMediaConnection extends EventEmitter {
             }
             else if (op === VoiceOpCodes.RESUMED) {
                 this.status.started = true;
-                this.udp.ready = true;
             }
             else if (op === VoiceOpCodes.CLIENTS_CONNECT) {
                 d.user_ids.forEach(id => this._connectedUsers.add(id));
@@ -486,33 +477,33 @@ export abstract class BaseMediaConnection extends EventEmitter {
     ** Uses opus for audio
     */
     private setProtocols(): Promise<void> {
-        const { ip, port } = this.udp;
-        if (!ip || !port)
-            throw new Error("IP or port is undefined (this shouldn't happen!!!)");
         // select encryption mode
         // From Discord docs: 
         // You must support aead_xchacha20_poly1305_rtpsize. You should prefer to use aead_aes256_gcm_rtpsize when it is available.
-        let encryptionMode: SupportedEncryptionModes;
-        if (!this.webRtcParams)
-            throw new Error("WebRTC connection not ready");
-        if (
-            this.webRtcParams.supportedEncryptionModes.includes(SupportedEncryptionModes.AES256) &&
-            !this._streamer.opts.forceChacha20Encryption
-        ) {
-            encryptionMode = SupportedEncryptionModes.AES256
-        } else {
-            encryptionMode = SupportedEncryptionModes.XCHACHA20
-        }
+        // let encryptionMode: SupportedEncryptionModes;
+        if (!this._webRtcParams)
+            throw new Error("WebRTC parameters not set");
+        // if (
+        //     this._webRtcParams.supportedEncryptionModes.includes(SupportedEncryptionModes.AES256) &&
+        //     !this._streamer.opts.forceChacha20Encryption
+        // ) {
+        //     encryptionMode = SupportedEncryptionModes.AES256
+        // } else {
+        //     encryptionMode = SupportedEncryptionModes.XCHACHA20
+        // }
         return new Promise((resolve) => {
-            this.sendOpcode(VoiceOpCodes.SELECT_PROTOCOL, {
-                protocol: "udp",
-                codecs: Object.values(CodecPayloadType) as ValueOf<typeof CodecPayloadType>[],
-                data: {
-                    address: ip,
-                    port: port,
-                    mode: encryptionMode
-                }
-            });
+            this._webRtcConn.webRtcConn.createOffer()
+                .then(offer => {
+                    const sdp = offer.sdp;
+                    const rtc_connection_id = uuidv4();
+                    this.sendOpcode(VoiceOpCodes.SELECT_PROTOCOL, {
+                        protocol: "webrtc",
+                        codecs: Object.values(CodecPayloadType) as ValueOf<typeof CodecPayloadType>[],
+                        data: sdp,
+                        sdp,
+                        rtc_connection_id
+                    });
+                })
             this.once("select_protocol_ack", () => resolve());
         })
     }
@@ -526,9 +517,9 @@ export abstract class BaseMediaConnection extends EventEmitter {
     public setVideoAttributes(enabled: false): void
     public setVideoAttributes(enabled: true, attr: VideoAttributes): void
     public setVideoAttributes(enabled: boolean, attr?: VideoAttributes): void {
-        if (!this.webRtcParams)
-            throw new Error("WebRTC connection not ready");
-        const { audioSsrc, videoSsrc, rtxSsrc } = this.webRtcParams;
+        if (!this._webRtcParams)
+            throw new Error("WebRTC parameters not set");
+        const { audioSsrc, videoSsrc, rtxSsrc } = this._webRtcParams;
         if (!enabled) {
             this.sendOpcode(VoiceOpCodes.VIDEO, {
                 audio_ssrc: audioSsrc,
@@ -570,19 +561,12 @@ export abstract class BaseMediaConnection extends EventEmitter {
     ** speaking -> speaking status on or off
     */
     public setSpeaking(speaking: boolean): void {
-        if (!this.webRtcParams)
+        if (!this._webRtcParams)
             throw new Error("WebRTC connection not ready");
         this.sendOpcode(VoiceOpCodes.SPEAKING, {
             delay: 0,
             speaking: speaking ? 1 : 0,
-            ssrc: this.webRtcParams.audioSsrc
+            ssrc: this._webRtcParams.audioSsrc
         });
-    }
-
-    /*
-    ** Start media connection
-    */
-    public sendVoice(): Promise<void> {
-        return this.udp.createUdp().then(() => this.setProtocols());
     }
 }

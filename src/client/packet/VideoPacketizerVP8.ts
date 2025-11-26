@@ -1,8 +1,8 @@
-import type { MediaUdp } from "../voice/MediaUdp.js";
 import { max_int16bit } from "../../utils.js";
 import { BaseMediaPacketizer } from "./BaseMediaPacketizer.js";
-import { CodecPayloadType } from "../voice/BaseMediaConnection.js";
 import { MediaType, Codec } from "@snazzah/davey";
+import { RtpPacket, type MediaStreamTrack } from "werift";
+import type { BaseMediaConnection } from "../voice/BaseMediaConnection.js";
 
 /**
  * VP8 payload format
@@ -11,8 +11,8 @@ import { MediaType, Codec } from "@snazzah/davey";
 export class VideoPacketizerVP8 extends BaseMediaPacketizer {
     private _pictureId: number;
 
-    constructor(connection: MediaUdp, ssrc: number) {
-        super(connection, ssrc, CodecPayloadType.VP8.payload_type, true);
+    constructor(track: MediaStreamTrack, mediaConn: BaseMediaConnection) {
+        super(track, mediaConn);
         this._pictureId = 0;
     }
 
@@ -22,31 +22,25 @@ export class VideoPacketizerVP8 extends BaseMediaPacketizer {
 
     public override async sendFrame(frame: Buffer, frametime: number): Promise<void> {
         super.sendFrame(frame, frametime);
-        const { daveReady, daveSession } = this.mediaUdp.mediaConnection;
+        const { daveReady, daveSession } = this._mediaConn;
         if (daveReady)
             frame = daveSession!.encrypt(MediaType.VIDEO, Codec.VP8, frame);
         const data = this.partitionDataMTUSizedChunks(frame);
 
         let bytesSent = 0;
-        const encryptedPackets = data.map((chunk, i) => this.createPacket(chunk, i === (data.length - 1), i === 0))
-        for (const packet of await Promise.all(encryptedPackets)) {
-            this.mediaUdp.sendPacket(packet);
-            bytesSent += packet.length;
+        for (let i = 0; i < data.length; i++)
+        {
+            const packet = this.createPacket(data[i], i === 0, i === data.length - 1);
+            bytesSent += this.sendPacket(packet);
         }
-
         await this.onFrameSent(data.length, bytesSent, frametime);
     }
 
-    public async createPacket(chunk: Buffer, isLastPacket = true, isFirstPacket = true): Promise<Buffer> {
+    public createPacket(chunk: Buffer, isFirstPacket = true, isLastPacket = true) {
         if (chunk.length > this.mtu) throw Error('error packetizing video frame: frame is larger than mtu');
-
-        const packetHeader = Buffer.concat([this.makeRtpHeader(isLastPacket), BaseMediaPacketizer.extensionHeader]);
-
-        const packetData = Buffer.concat([...BaseMediaPacketizer.extensions, this.makeChunk(chunk, isFirstPacket)]);
-
-        // nonce buffer used for encryption. 4 bytes are appended to end of packet
-        const [ciphertext, nonceBuffer] = await this.encryptData(packetData, packetHeader);
-        return Buffer.concat([packetHeader, ciphertext, nonceBuffer.subarray(0, 4)]);
+        const header = this.makeRtpHeader(isLastPacket);
+        const payload = this.makeChunk(chunk, isFirstPacket);
+        return new RtpPacket(header, payload);
     }
 
     public override async onFrameSent(packetsSent: number, bytesSent: number, frametime: number): Promise<void> {

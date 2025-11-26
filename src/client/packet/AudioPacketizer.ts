@@ -1,27 +1,26 @@
-import type { MediaUdp } from "../voice/MediaUdp.js";
 import { BaseMediaPacketizer } from "./BaseMediaPacketizer.js";
-import { CodecPayloadType } from "../voice/BaseMediaConnection.js";
+import { RtpPacket, type MediaStreamTrack } from "werift";
+import type { BaseMediaConnection } from "../voice/BaseMediaConnection.js"
 
 export class AudioPacketizer extends BaseMediaPacketizer {
-    constructor(connection: MediaUdp, ssrc: number) {
-        super(connection, ssrc, CodecPayloadType.opus.payload_type);
+    constructor(audioTrack: MediaStreamTrack, mediaConn: BaseMediaConnection) {
+        super(audioTrack, mediaConn);
     }
 
     public override async sendFrame(frame: Buffer, frametime: number): Promise<void> {
         super.sendFrame(frame, frametime);
-        const { daveReady, daveSession } = this.mediaUdp.mediaConnection;
+        const { daveReady, daveSession } = this._mediaConn;
         if (daveReady)
             frame = daveSession!.encryptOpus(frame);
-        const packet = await this.createPacket(frame);
-        this.mediaUdp.sendPacket(packet);
-        this.onFrameSent(packet.length, frametime);
+        const packet = this.createPacket(frame);
+        const bytesSent = this.sendPacket(packet);
+        this.onFrameSent(bytesSent, frametime);
     }
 
-    public async createPacket(chunk: Buffer): Promise<Buffer> {
+    public createPacket(chunk: Buffer) {
         const header = this.makeRtpHeader();
-
-        const [ciphertext, nonceBuffer] = await this.encryptData(chunk, header);
-        return Buffer.concat([header, ciphertext, nonceBuffer.subarray(0, 4)]);
+        const packet = new RtpPacket(header, chunk)
+        return packet;
     }
 
     public override async onFrameSent(bytesSent: number, frametime: number): Promise<void> {

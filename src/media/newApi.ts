@@ -14,9 +14,10 @@ import type { Request } from 'zeromq';
 
 import LibAV from '@lng2004/libav.js-variant-webcodecs-avf-with-decoders';
 import type { SupportedVideoCodec } from '../utils.js';
-import type { MediaUdp, Streamer } from '../client/index.js';
+import type { Streamer } from '../client/index.js';
 import type { EncoderSettingsGetter } from './encoders/index.js';
 import type { VideoStreamInfo } from './LibavDemuxer.js';
+import type { WebRtcConnWrapper } from '../client/voice/WebRtcWrapper.js';
 
 export type PrepareStreamOptions = {
     /**
@@ -492,33 +493,33 @@ export async function playStream(
         [AVCodecID.AV_CODEC_ID_AV1]: "AV1"
     }
 
-    let udp: MediaUdp;
+    let conn: WebRtcConnWrapper
     let stopStream: () => unknown;
     if (mergedOptions.type === "go-live")
     {
-        udp = await streamer.createStream();
+        conn = await streamer.createStream();
         stopStream = () => streamer.stopStream();
     }
     else
     {
-        udp = streamer.voiceConnection.udp;
+        conn = streamer.voiceConnection.webRtcConn;
         streamer.signalVideo(true);
         stopStream = () => streamer.signalVideo(false);
     }
-    udp.setPacketizer(videoCodecMap[video.codec]);
-    udp.mediaConnection.setSpeaking(true);
+    const packetizer = videoCodecMap[video.codec];
+    conn.mediaConnection.setSpeaking(true);
     const { width, height, frameRate } = mergedOptions;
-    udp.mediaConnection.setVideoAttributes(true, {
+    conn.mediaConnection.setVideoAttributes(true, {
         width: Math.round(typeof width === "function" ? width(video) : width),
         height: Math.round(typeof height === "function" ? height(video) : height),
         fps: Math.round(typeof frameRate === "function" ? frameRate(video) : frameRate)
     });
 
-    const vStream = new VideoStream(udp);
+    const vStream = new VideoStream(conn);
     video.stream.pipe(vStream);
     if (audio)
     {
-        const aStream = new AudioStream(udp);
+        const aStream = new AudioStream(conn);
         audio.stream.pipe(aStream);
         vStream.syncStream = aStream;
 
@@ -585,8 +586,8 @@ export async function playStream(
     return new Promise<void>((resolve, reject) => {
         cleanupFuncs.push(() => {
             stopStream();
-            udp.mediaConnection.setSpeaking(false);
-            udp.mediaConnection.setVideoAttributes(false);
+            conn.mediaConnection.setSpeaking(false);
+            conn.mediaConnection.setVideoAttributes(false);
         });
         let cleanedUp = false;
         const cleanup = () => {

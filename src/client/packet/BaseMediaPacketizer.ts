@@ -1,6 +1,7 @@
 import { Log } from "debug-level";
 import { max_int16bit, max_int32bit } from "../../utils.js";
-import type { MediaUdp } from "../voice/MediaUdp.js";
+import { RtpHeader, Extension, RtpPacket, type MediaStreamTrack } from "werift";
+import type { BaseMediaConnection } from "../voice/BaseMediaConnection.js";
 
 const ntpEpoch = new Date("Jan 01 1900 GMT").getTime();
 
@@ -8,11 +9,8 @@ export class BaseMediaPacketizer {
     protected static extensions = [
         this.createPlayoutDelayExtPayload(0, 0)
     ];
-    protected static extensionHeader = this.createExtensionHeader(this.extensions.length);
     private _loggerRtcpSr = new Log("packetizer:rtcp-sr");
 
-    private _ssrc: number;
-    private _payloadType: number;
     private _mtu: number;
     private _sequence: number;
     private _timestamp: number;
@@ -24,13 +22,12 @@ export class BaseMediaPacketizer {
     private _currentMediaTimestamp: number;
     private _srInterval: number;
 
-    private _mediaUdp: MediaUdp;
-    private _extensionEnabled: boolean;
+    protected _track: MediaStreamTrack;
+    protected _mediaConn: BaseMediaConnection;
 
-    constructor(connection: MediaUdp, ssrc: number, payloadType: number, extensionEnabled = false) {
-        this._mediaUdp = connection;
-        this._payloadType = payloadType;
-        this._ssrc = ssrc;
+    constructor(track: MediaStreamTrack, mediaConn: BaseMediaConnection) {
+        this._track = track;
+        this._mediaConn = mediaConn;
         this._sequence = 0;
         this._timestamp = 0;
         this._totalBytes = 0;
@@ -39,17 +36,15 @@ export class BaseMediaPacketizer {
         this._lastRtcpTime = 0;
         this._currentMediaTimestamp = 0;
         this._mtu = 1200;
-        this._extensionEnabled = extensionEnabled;
-
         this._srInterval = 1000;
     }
 
     public get ssrc(): number | undefined {
-        return this._ssrc;
+        return this._track.ssrc
     }
 
     public set ssrc(value: number) {
-        this._ssrc = value;
+        this._track.ssrc = value;
         this._totalBytes = this._totalPackets = 0;
     }
 
@@ -96,6 +91,11 @@ export class BaseMediaPacketizer {
         this._currentMediaTimestamp += frametime;
     }
 
+    protected sendPacket(packet: RtpPacket) {
+        this._track.writeRtp(packet);
+        return packet.serializeSize;
+    }
+
     /**
      * Partitions a buffer into chunks of length this.mtu
      * @param data buffer to be partitioned
@@ -126,18 +126,17 @@ export class BaseMediaPacketizer {
         this._timestamp = (this._timestamp + incrementBy) % max_int32bit;
     }
 
-    public makeRtpHeader(isLastPacket = true): Buffer {
-        const packetHeader = Buffer.alloc(12);
-
-        packetHeader[0] = 2 << 6 | ((this._extensionEnabled ? 1 : 0) << 4); // set version and flags
-        packetHeader[1] = this._payloadType; // set packet payload
-        if (isLastPacket)
-            packetHeader[1] |= 0b10000000; // mark M bit if last frame
-
-        packetHeader.writeUIntBE(this.getNewSequence(), 2, 2);
-        packetHeader.writeUIntBE(Math.round(this._timestamp), 4, 4);
-        packetHeader.writeUIntBE(this._ssrc, 8, 4);
-        return packetHeader;
+    public makeRtpHeader(isLastPacket = true): RtpHeader {
+        const header = new RtpHeader({
+            extension: true,
+            extensionLength: BaseMediaPacketizer.extensions.length,
+            extensions: BaseMediaPacketizer.extensions,
+            marker: isLastPacket,
+            sequenceNumber: this.getNewSequence(),
+            timestamp: Math.round(this._timestamp),
+            ssrc: this.ssrc
+        })
+        return header;
     }
 
     public async makeRtcpSenderReport(): Promise<Buffer> {
@@ -173,111 +172,26 @@ export class BaseMediaPacketizer {
     }
 
     /**
-     * Creates a one-byte extension header
-     * https://www.rfc-editor.org/rfc/rfc5285#section-4.2
-     * @returns extension header
-     */
-    public static createExtensionHeader(count: number): Buffer {
-        /**
-         *  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-            +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-            |      defined by profile       |           length              |
-            +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-        */
-        const profile = Buffer.allocUnsafe(4);
-        profile[0] = 0xBE;
-        profile[1] = 0xDE;
-        profile.writeInt16BE(count, 2); // extension count
-
-        return profile
-    }
-
-    /**
      * Create a playoutDelay extension payload
      * 
      * https://webrtc.googlesource.com/src/+/refs/heads/main/docs/native-code/rtp-hdrext/playout-delay
      */
-    public static createPlayoutDelayExtPayload(min: number, max: number): Buffer {
-        const data = Buffer.allocUnsafe(4);
-        /**
-          *   0 1 2 3 4 5 6 7
-             +-+-+-+-+-+-+-+-+
-             |  ID   |  len  |
-             +-+-+-+-+-+-+-+-+
-
-             where len = actual length - 1
-          */
-        data[0] = (5 << 4) | 2;
-
+    public static createPlayoutDelayExtPayload(min: number, max: number): Extension {
         /** Specific to type playout-delay
          *   0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3
             +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
             |       MIN delay       |       MAX delay       |
             +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
         */
+        const data = Buffer.allocUnsafe(3);
         const delay = (min & 0xFFF) << 12 || (max & 0xFFF);
-        data.writeUIntBE(delay, 1, 3);
+        data.writeUIntBE(delay, 0, 3);
+        const ext: Extension = {
+            id: 5,
+            payload: data
+        }
 
-        return data;
-    }
-
-    /**
-     * Encrypt packet payload. Encrpyed Payload is determined to be
-     * according to https://tools.ietf.org/html/rfc3711#section-3.1
-     * and https://datatracker.ietf.org/doc/html/rfc7714#section-8.2
-     * 
-     * Associated Data: The version V (2 bits), padding flag P (1 bit),
-                       extension flag X (1 bit), Contributing Source
-                       (CSRC) count CC (4 bits), marker M (1 bit),
-                       Payload Type PT (7 bits), sequence number
-                       (16 bits), timestamp (32 bits), SSRC (32 bits),
-                       optional CSRC identifiers (32 bits each), and
-                       optional RTP extension (variable length).
-
-      Plaintext:       The RTP payload (variable length), RTP padding
-                       (if used, variable length), and RTP pad count (if
-                       used, 1 octet).
-
-      Raw Data:        The optional variable-length SRTP Master Key
-                       Identifier (MKI) and SRTP authentication tag
-                       (whose use is NOT RECOMMENDED).  These fields are
-                       appended after encryption has been performed.
-
-        0                   1                   2                   3
-        0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-       +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    A  |V=2|P|X|  CC   |M|     PT      |       sequence number         |
-       +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    A  |                           timestamp                           |
-       +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    A  |           synchronization source (SSRC) identifier            |
-       +=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
-    A  |      contributing source (CSRC) identifiers (optional)        |
-    A  |                               ....                            |
-       +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    A  |                   RTP extension header (OPTIONAL)             |
-       +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    P  |                          payload  ...                         |
-    P  |                               +-------------------------------+
-    P  |                               | RTP padding   | RTP pad count |
-       +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-
-                P = Plaintext (to be encrypted and authenticated)
-                A = Associated Data (to be authenticated only)
-     * @param plaintext 
-     * @param nonceBuffer
-     * @param additionalData 
-     * @returns ciphertext
-     */
-    public encryptData(plaintext: Buffer, additionalData: Buffer): Promise<[Buffer, Buffer]> {
-        const encryptor = this._mediaUdp.mediaConnection.transportEncryptor;
-        if (!encryptor)
-            throw new Error("Transport encryptor not defined. Did you forget to select protocol?");
-        return encryptor.encrypt(plaintext, additionalData);
-    }
-
-    public get mediaUdp(): MediaUdp {
-        return this._mediaUdp;
+        return ext;
     }
 
     public get mtu(): number {

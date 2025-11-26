@@ -1,4 +1,3 @@
-import type { MediaUdp } from "../voice/MediaUdp.js";
 import { BaseMediaPacketizer } from "./BaseMediaPacketizer.js";
 import {
     H264Helpers,
@@ -6,9 +5,10 @@ import {
     type AnnexBHelpers
 } from "../processing/AnnexBHelper.js";
 import { splitNalu } from "../processing/AnnexBHelper.js";
-import { CodecPayloadType } from "../voice/BaseMediaConnection.js";
 import { MediaType, Codec } from "@snazzah/davey";
 import pMap from "p-map";
+import { RtpPacket, type MediaStreamTrack } from "werift";
+import type { BaseMediaConnection } from "../voice/BaseMediaConnection.js";
 
 /**
  * Annex B format
@@ -62,66 +62,46 @@ import pMap from "p-map";
 abstract class VideoPacketizerAnnexB extends BaseMediaPacketizer {
     private _nalFunctions: AnnexBHelpers;
 
-    constructor(connection: MediaUdp, ssrc: number, payloadType: number, nalFunctions: AnnexBHelpers) {
-        super(connection, ssrc, payloadType, true);
+    constructor(track: MediaStreamTrack, mediaConn: BaseMediaConnection, nalFunctions: AnnexBHelpers) {
+        super(track, mediaConn);
         this._nalFunctions = nalFunctions;
     }
 
     private async _sendNonFragmented(nalus: Buffer[], isLastNal: boolean) {
-        const packetHeader = Buffer.concat([
-            this.makeRtpHeader(isLastNal), BaseMediaPacketizer.extensionHeader
-        ]);
-        const packetDataChunks = [...BaseMediaPacketizer.extensions];
+        const header = this.makeRtpHeader(isLastNal);
+        const payloadChunks = [];
         if (nalus.length == 1) {
-            packetDataChunks.push(nalus[0]);
+            payloadChunks.push(nalus[0]);
         }
         else {
-            packetDataChunks.push(this.makeAggregateUnitHeader(nalus))
+            payloadChunks.push(this.makeAggregateUnitHeader(nalus))
             for (const nalu of nalus) {
                 const size = Buffer.allocUnsafe(2);
                 size.writeUint16BE(nalu.length);
-                packetDataChunks.push(size, nalu);
+                payloadChunks.push(size, nalu);
             }
         }
-        const packetData = Buffer.concat(packetDataChunks);
-        const packet = await this.encryptData(packetData, packetHeader)
-            .then(
-                ([ciphertext, nonceBuffer]) => Buffer.concat(
-                    [packetHeader, ciphertext, nonceBuffer.subarray(0, 4)]
-                )
-            );
-        await this.mediaUdp.sendPacket(packet);
-        return packet.length;
+        const payload = Buffer.concat(payloadChunks);
+        const packet = new RtpPacket(header, payload);
+        const bytesSent = this.sendPacket(packet);
+        return bytesSent;
     }
     private async _sendFragmented(nalu: Buffer, isLastNal: boolean) {
         let bytesSent = 0;
         const [naluHeader, naluData] = this._nalFunctions.splitHeader(nalu);
         const data = this.partitionDataMTUSizedChunks(naluData);
-        await pMap(data, async (chunk, i) => {
+        for (let i = 0; i < data.length; i++)
+        {
             const isFirstPacket = i === 0;
             const isLastPacket = i === data.length - 1;
             const markerBit = isLastNal && isLastPacket;
-            const packetHeader = Buffer.concat([
-                this.makeRtpHeader(markerBit), BaseMediaPacketizer.extensionHeader
+            const header = this.makeRtpHeader(markerBit);
+            const payload = Buffer.concat([
+                this.makeFragmentationUnitHeader(isFirstPacket, isLastPacket, naluHeader), data[i]
             ]);
-            const packetData = Buffer.concat([
-                ...BaseMediaPacketizer.extensions,
-                this.makeFragmentationUnitHeader(
-                    isFirstPacket,
-                    isLastPacket,
-                    naluHeader
-                ),
-                chunk
-            ]);
-            const encryptedPacket = await this.encryptData(packetData, packetHeader)
-                .then(([ciphertext, nonceBuffer]) => Buffer.concat([
-                    packetHeader,
-                    ciphertext,
-                    nonceBuffer.subarray(0, 4),
-                ]));
-            await this.mediaUdp.sendPacket(encryptedPacket);
-            bytesSent += encryptedPacket.length;
-        }, { concurrency: 10 });
+            const packet = new RtpPacket(header, payload);
+            bytesSent += this.sendPacket(packet);
+        }
         return [data.length, bytesSent];
     }
     /**
@@ -143,8 +123,7 @@ abstract class VideoPacketizerAnnexB extends BaseMediaPacketizer {
             const isLastNal = index === nalus.length - 1;
             if (nalu.length <= this.mtu) {
                 // Aggregate NALUs to be sent together
-                if (naluAggregateSize + nalu.length >= this.mtu)
-                {
+                if (naluAggregateSize + nalu.length >= this.mtu) {
                     packetsSent++;
                     bytesSent += await this._sendNonFragmented(naluAggregate, false);
                     naluAggregate = [];
@@ -153,8 +132,7 @@ abstract class VideoPacketizerAnnexB extends BaseMediaPacketizer {
                 naluAggregate.push(nalu);
                 naluAggregateSize += nalu.length;
             } else {
-                if (naluAggregateSize)
-                {
+                if (naluAggregateSize) {
                     // Send outstanding NALUs before sending fragmented NALU
                     packetsSent++;
                     bytesSent += await this._sendNonFragmented(naluAggregate, false);
@@ -168,8 +146,7 @@ abstract class VideoPacketizerAnnexB extends BaseMediaPacketizer {
             index++;
         }
         // Outstanding NALUs after end
-        if (naluAggregateSize)
-        {
+        if (naluAggregateSize) {
             packetsSent++;
             bytesSent += await this._sendNonFragmented(naluAggregate, true);
         }
@@ -189,11 +166,11 @@ abstract class VideoPacketizerAnnexB extends BaseMediaPacketizer {
 }
 
 export class VideoPacketizerH264 extends VideoPacketizerAnnexB {
-    constructor(connection: MediaUdp, ssrc: number) {
-        super(connection, ssrc, CodecPayloadType.H264.payload_type, H264Helpers);
+    constructor(track: MediaStreamTrack, mediaConn: BaseMediaConnection) {
+        super(track, mediaConn, H264Helpers);
     }
     public override async sendFrame(frame: Buffer, frametime: number): Promise<void> {
-        const { daveReady, daveSession } = this.mediaUdp.mediaConnection;
+        const { daveReady, daveSession } = this._mediaConn;
         if (daveReady)
             frame = daveSession!.encrypt(MediaType.VIDEO, Codec.H264, frame);
         return super.sendFrame(frame, frametime);
@@ -262,11 +239,11 @@ export class VideoPacketizerH264 extends VideoPacketizerAnnexB {
 }
 
 export class VideoPacketizerH265 extends VideoPacketizerAnnexB {
-    constructor(connection: MediaUdp, ssrc: number) {
-        super(connection, ssrc, CodecPayloadType.H265.payload_type, H265Helpers);
+    constructor(track: MediaStreamTrack, mediaConn: BaseMediaConnection) {
+        super(track, mediaConn, H265Helpers);
     }
     public override async sendFrame(frame: Buffer, frametime: number): Promise<void> {
-        const { daveReady, daveSession } = this.mediaUdp.mediaConnection;
+        const { daveReady, daveSession } = this._mediaConn;
         if (daveReady)
             frame = daveSession!.encrypt(MediaType.VIDEO, Codec.H265, frame);
         return super.sendFrame(frame, frametime);

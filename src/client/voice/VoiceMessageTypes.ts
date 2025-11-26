@@ -59,13 +59,19 @@ export namespace Message {
     }
 
     export type SelectProtocol = {
-        protocol: string,
+        protocol: "udp",
         codecs: CodecPayloadType[],
         data: {
             address: string,
             port: number,
             mode: SupportedEncryptionModes
         }
+    } | {
+        protocol: "webrtc",
+        codecs: CodecPayloadType[],
+        data: string,
+        sdp: string,
+        rtc_connection_id: string
     }
 
     export type Video = {
@@ -110,12 +116,16 @@ export namespace Message {
     }
 
     export type SelectProtocolAck = {
-        secret_key: number[],
         audio_codec: string,
         video_codec: string,
-        mode: string,
         dave_protocol_version: number,
-    }
+    } & ({
+        secret_key: number[],
+        mode: string,
+    } | {
+        media_session_id: number,
+        sdp: string,
+    })
 
     export type HeartbeatAck = {
         t: number
