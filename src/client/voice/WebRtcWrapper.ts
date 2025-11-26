@@ -1,5 +1,5 @@
 import { RTCPeerConnection, RTCRtpCodecParameters, RTCRtpSender, MediaStream, MediaStreamTrack } from 'werift';
-import { CodecPayloadType } from './BaseMediaConnection.js';
+import { CodecPayloadType } from "./CodecPayloadType.js";
 import { AudioPacketizer } from '../packet/AudioPacketizer.js';
 import {
   VideoPacketizerH264,
