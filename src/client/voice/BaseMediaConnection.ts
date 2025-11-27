@@ -49,7 +49,7 @@ export abstract class BaseMediaConnection extends EventEmitter {
     public token: string | null = null;
     public session_id: string | null = null;
 
-    private _webRtcConn;
+    private _webRtcWrapper;
     private _webRtcParams: WebRtcParameters | null = null;
     public ready: (conn: WebRtcConnWrapper) => void;
 
@@ -72,7 +72,7 @@ export abstract class BaseMediaConnection extends EventEmitter {
         callback: (conn: WebRtcConnWrapper) => void
     ) {
         super();
-        this._webRtcConn = new WebRtcConnWrapper(this);
+        this._webRtcWrapper = new WebRtcConnWrapper(this);
         this._streamer = streamer;
         this.status = {
             hasSession: false,
@@ -94,7 +94,7 @@ export abstract class BaseMediaConnection extends EventEmitter {
     }
 
     public get webRtcConn() {
-        return this._webRtcConn;
+        return this._webRtcWrapper;
     }
 
     public get webRtcParams() {
@@ -155,7 +155,7 @@ export abstract class BaseMediaConnection extends EventEmitter {
 
                 this.interval && clearInterval(this.interval);
                 this.status.started = false;
-                this._webRtcConn?.close();
+                this._webRtcWrapper?.close();
 
                 const canResume = code === 4_015 || code < 4_000;
 
@@ -184,12 +184,83 @@ export abstract class BaseMediaConnection extends EventEmitter {
     async handleProtocolAck(d: Message.SelectProtocolAck) {
         if (!("sdp" in d))
             throw new Error("Only WebRTC connections are allowed");
-        await this._webRtcConn.webRtcConn.setRemoteDescription({
-            sdp: d.sdp,
-            type: "answer"
-        })
         this._daveProtocolVersion = d.dave_protocol_version;
         this.initDave();
+        // Discord's SDP is absolute garbage...Generate one ourselves
+        let ip, port, iceUsername, icePassword, fingerprint, candidate;
+        for (const line of d.sdp.split("\n")) {
+            if (line.startsWith("c="))
+                ip = line;
+            else if (line.startsWith("a=rtcp"))
+                port = line.split(":")[1];
+            else if (line.startsWith("a=ice-ufrag"))
+                iceUsername = line;
+            else if (line.startsWith("a=ice-pwd"))
+                icePassword = line;
+            else if (line.startsWith("a=fingerprint"))
+                fingerprint = line;
+            else if (line.startsWith("a=candidate"))
+                candidate = line;
+        }
+        const audioPayloadType = CodecPayloadType.opus.payload_type;
+        const audioSection = `
+m=audio ${port} UDP/TLS/RTP/SAVPF ${audioPayloadType}
+${ip}
+a=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level
+a=extmap:3 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01
+a=setup:passive
+a=mid:0
+a=maxptime:60
+a=inactive
+${iceUsername}
+${icePassword}
+${fingerprint}
+${candidate}
+a=rtcp-mux
+a=rtpmap:${audioPayloadType} opus/48000/2
+a=fmtp:${audioPayloadType} minptime=10;useinbandfec=1;usedtx=1
+a=rtcp-fb:${audioPayloadType} transport-cc
+a=rtcp-fb:${audioPayloadType} nack
+a=ice-lite
+`.trim();
+        const videoPayloads = Object.values(CodecPayloadType)
+            .filter(el => el.type === "video")
+        const videoPayloadTypes = videoPayloads.flatMap(el => [el.payload_type, el.rtx_payload_type]);
+        const videoSection = `
+m=video ${port} UDP/TLS/RTP/SAVPF ${videoPayloadTypes.join(" ")}
+${ip}
+a=extmap:2 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time
+a=extmap:3 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01
+a=extmap:14 urn:ietf:params:rtp-hdrext:toffset
+a=extmap:13 urn:3gpp:video-orientation
+a=extmap:5 http://www.webrtc.org/experiments/rtp-hdrext/playout-delay
+a=setup:passive
+a=mid:1
+a=inactive
+${iceUsername}
+${icePassword}
+${fingerprint}
+${candidate}
+a=rtcp-mux
+a=ice-lite
+`.trim();
+        const videoRtpMap = videoPayloads.flatMap(el => [
+            `a=rtpmap:${el.payload_type} ${el.name}/90000`,
+            `a=rtpmap:${el.rtx_payload_type} rtx/90000`,
+            `a=fmtp:${el.rtx_payload_type} apt=${el.payload_type}`,
+            `a=rtcp-fb:${el.payload_type} ccm fir`,
+            `a=rtcp-fb:${el.payload_type} nack`,
+            `a=rtcp-fb:${el.payload_type} nack pli`,
+            `a=rtcp-fb:${el.payload_type} goog-remb`,
+            `a=rtcp-fb:${el.payload_type} transport-cc`
+        ]).join('\n');
+        await this._webRtcWrapper.webRtcConn.setRemoteDescription({
+            sdp: [audioSection,videoSection,videoRtpMap].join("\n").replaceAll("\n", "\r\n"),
+            type: "answer"
+        });
+        setInterval(async () => {
+            console.log(await this._webRtcWrapper.webRtcConn.getStats())
+        }, 1000);
         this.emit("select_protocol_ack");
     }
 
@@ -258,7 +329,7 @@ export abstract class BaseMediaConnection extends EventEmitter {
 
             if (op === VoiceOpCodes.READY) { // ready
                 this.handleReady(d);
-                this.setProtocols().then(() => this.ready(this._webRtcConn));
+                this.ready(this._webRtcWrapper);
                 this.setVideoAttributes(false);
             }
             else if (op >= 4000) {
@@ -456,7 +527,7 @@ export abstract class BaseMediaConnection extends EventEmitter {
     ** Uses vp8 for video
     ** Uses opus for audio
     */
-    private setProtocols(): Promise<void> {
+    public async setProtocols(videoCodec: string): Promise<void> {
         // select encryption mode
         // From Discord docs: 
         // You must support aead_xchacha20_poly1305_rtpsize. You should prefer to use aead_aes256_gcm_rtpsize when it is available.
@@ -471,21 +542,22 @@ export abstract class BaseMediaConnection extends EventEmitter {
         // } else {
         //     encryptionMode = SupportedEncryptionModes.XCHACHA20
         // }
+        const { webRtcConn } = this._webRtcWrapper;
+        this._webRtcWrapper.setPacketizer(videoCodec);
+        const offer = await webRtcConn.createOffer();
+        await webRtcConn.setLocalDescription(offer);
+        const sdp = offer.sdp.replaceAll("\r\n", "\n");
+            const rtc_connection_id = uuidv4();
+            this.sendOpcode(VoiceOpCodes.SELECT_PROTOCOL, {
+                protocol: "webrtc",
+                codecs: Object.values(CodecPayloadType) as ValueOf<typeof CodecPayloadType>[],
+                data: sdp,
+                sdp: sdp,
+                rtc_connection_id
+            });
         return new Promise((resolve) => {
-            this._webRtcConn.webRtcConn.createOffer()
-                .then(offer => {
-                    const sdp = offer.sdp;
-                    const rtc_connection_id = uuidv4();
-                    this.sendOpcode(VoiceOpCodes.SELECT_PROTOCOL, {
-                        protocol: "webrtc",
-                        codecs: Object.values(CodecPayloadType) as ValueOf<typeof CodecPayloadType>[],
-                        data: sdp,
-                        sdp,
-                        rtc_connection_id
-                    });
-                })
             this.once("select_protocol_ack", () => resolve());
-        })
+        });
     }
 
     /*

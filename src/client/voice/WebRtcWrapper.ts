@@ -84,11 +84,9 @@ export class WebRtcConnWrapper {
       codec: rtpCodecParameters[videoCodecNormalized],
       ssrc: videoSsrc
     })
-    const mediaStream = new MediaStream([ audioTrack, videoTrack ]);
+    const mediaStream = new MediaStream([audioTrack, videoTrack]);
     this._audioRtcRtpSender = this._webRtcConn.addTrack(audioTrack, mediaStream);
     this._videoRtcRtpSender = this._webRtcConn.addTrack(videoTrack, mediaStream);
-    this._audioRtcRtpSender.runRtcp();
-    this._videoRtcRtpSender.runRtcp();
     this._audioPacketizer = new AudioPacketizer(audioTrack, this._mediaConn);
     switch (normalizeVideoCodec(videoCodec)) {
       case "H264":
