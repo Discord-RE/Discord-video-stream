@@ -258,9 +258,6 @@ a=ice-lite
             sdp: [audioSection,videoSection,videoRtpMap].join("\n").replaceAll("\n", "\r\n"),
             type: "answer"
         });
-        setInterval(async () => {
-            console.log(await this._webRtcWrapper.webRtcConn.getStats())
-        }, 1000);
         this.emit("select_protocol_ack");
     }
 
