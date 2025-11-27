@@ -1,7 +1,8 @@
 import { max_int16bit } from "../../utils.js";
 import { BaseMediaPacketizer } from "./BaseMediaPacketizer.js";
 import { MediaType, Codec } from "@snazzah/davey";
-import { RtpPacket, type MediaStreamTrack } from "werift";
+import { RtpPacket } from "werift-rtp";
+import type { MediaStreamTrack } from "werift";
 import type { BaseMediaConnection } from "../voice/BaseMediaConnection.js";
 
 /**

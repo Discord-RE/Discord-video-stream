@@ -6,8 +6,8 @@ import {
 } from "../processing/AnnexBHelper.js";
 import { splitNalu } from "../processing/AnnexBHelper.js";
 import { MediaType, Codec } from "@snazzah/davey";
-import pMap from "p-map";
-import { RtpPacket, type MediaStreamTrack } from "werift";
+import { RtpPacket } from "werift-rtp";
+import type { MediaStreamTrack } from "werift";
 import type { BaseMediaConnection } from "../voice/BaseMediaConnection.js";
 
 /**

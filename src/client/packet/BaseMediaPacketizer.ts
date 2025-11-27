@@ -1,6 +1,7 @@
 import { Log } from "debug-level";
 import { max_int16bit, max_int32bit } from "../../utils.js";
-import { RtpHeader, Extension, RtpPacket, RtcpSrPacket, RtcpSenderInfo, type MediaStreamTrack } from "werift";
+import { RtpHeader, Extension, RtpPacket, RtcpSrPacket, RtcpSenderInfo } from "werift-rtp";
+import type { MediaStreamTrack } from "werift";
 import type { BaseMediaConnection } from "../voice/BaseMediaConnection.js";
 
 const ntpEpoch = new Date("Jan 01 1900 GMT").getTime();

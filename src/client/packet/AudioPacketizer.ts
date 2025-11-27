@@ -1,5 +1,6 @@
 import { BaseMediaPacketizer } from "./BaseMediaPacketizer.js";
-import { RtpPacket, type MediaStreamTrack } from "werift";
+import { RtpPacket } from "werift-rtp";
+import type { MediaStreamTrack } from "werift";
 import type { BaseMediaConnection } from "../voice/BaseMediaConnection.js"
 
 export class AudioPacketizer extends BaseMediaPacketizer {
