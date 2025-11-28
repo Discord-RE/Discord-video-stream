@@ -2,8 +2,8 @@ import { max_int16bit } from "../../utils.js";
 import { BaseMediaPacketizer } from "./BaseMediaPacketizer.js";
 import { MediaType, Codec } from "@snazzah/davey";
 import { RtpPacket } from "werift-rtp";
-import type { MediaStreamTrack } from "werift";
-import type { BaseMediaConnection } from "../voice/BaseMediaConnection.js";
+import { CodecPayloadType } from "../voice/CodecPayloadType.js";
+import type { PacketizerParams } from "./BaseMediaPacketizer.js";
 
 /**
  * VP8 payload format
@@ -12,8 +12,8 @@ import type { BaseMediaConnection } from "../voice/BaseMediaConnection.js";
 export class VideoPacketizerVP8 extends BaseMediaPacketizer {
     private _pictureId: number;
 
-    constructor(track: MediaStreamTrack, mediaConn: BaseMediaConnection) {
-        super(track, mediaConn);
+    constructor(params: Omit<PacketizerParams, "payloadType">) {
+        super({ ...params, payloadType: CodecPayloadType.VP8.payload_type });
         this._pictureId = 0;
     }
 

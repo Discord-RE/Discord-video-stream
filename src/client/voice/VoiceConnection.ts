@@ -1,5 +1,5 @@
-import type { StreamConnection } from './StreamConnection.js';
 import { BaseMediaConnection } from './BaseMediaConnection.js';
+import type { StreamConnection } from './StreamConnection.js';
 
 export class VoiceConnection extends BaseMediaConnection {
     public streamConnection?: StreamConnection;

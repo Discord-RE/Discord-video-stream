@@ -2,7 +2,7 @@ import Davey from "@snazzah/davey"
 import EventEmitter from "node:events";
 import WebSocket from 'ws';
 import { Log } from "debug-level";
-import { v4 as uuidv4 } from "uuid";
+import { randomUUID } from "node:crypto";
 import { CodecPayloadType } from "./CodecPayloadType.js";
 import { WebRtcConnWrapper } from "./WebRtcWrapper.js";
 import { VoiceOpCodes, VoiceOpCodesBinary } from "./VoiceOpCodes.js";
@@ -72,7 +72,6 @@ export abstract class BaseMediaConnection extends EventEmitter {
         callback: (conn: WebRtcConnWrapper) => void
     ) {
         super();
-        this._webRtcWrapper = new WebRtcConnWrapper(this);
         this._streamer = streamer;
         this.status = {
             hasSession: false,
@@ -85,6 +84,7 @@ export abstract class BaseMediaConnection extends EventEmitter {
         this.channelId = channelId;
         this.botId = botId;
         this.ready = callback;
+        this._webRtcWrapper = new WebRtcConnWrapper(this);
     }
 
     public abstract get serverId(): string | null;
@@ -254,10 +254,10 @@ a=ice-lite
             `a=rtcp-fb:${el.payload_type} goog-remb`,
             `a=rtcp-fb:${el.payload_type} transport-cc`
         ]).join('\n');
-        await this._webRtcWrapper.webRtcConn.setRemoteDescription({
-            sdp: [audioSection,videoSection,videoRtpMap].join("\n").replaceAll("\n", "\r\n"),
-            type: "answer"
-        });
+        this._webRtcWrapper.webRtcConn.setRemoteDescription(
+            [audioSection,videoSection,videoRtpMap].join("\n").replaceAll("\n", "\r\n"),
+            "answer"
+        );
         this.emit("select_protocol_ack");
     }
 
@@ -326,7 +326,7 @@ a=ice-lite
 
             if (op === VoiceOpCodes.READY) { // ready
                 this.handleReady(d);
-                this.ready(this._webRtcWrapper);
+                this.setProtocols().then(() => this.ready(this._webRtcWrapper));
                 this.setVideoAttributes(false);
             }
             else if (op >= 4000) {
@@ -524,7 +524,7 @@ a=ice-lite
     ** Uses vp8 for video
     ** Uses opus for audio
     */
-    public async setProtocols(videoCodec: string): Promise<void> {
+    public async setProtocols(): Promise<void> {
         // select encryption mode
         // From Discord docs: 
         // You must support aead_xchacha20_poly1305_rtpsize. You should prefer to use aead_aes256_gcm_rtpsize when it is available.
@@ -540,11 +540,11 @@ a=ice-lite
         //     encryptionMode = SupportedEncryptionModes.XCHACHA20
         // }
         const { webRtcConn } = this._webRtcWrapper;
-        this._webRtcWrapper.setPacketizer(videoCodec);
-        const offer = await webRtcConn.createOffer();
-        await webRtcConn.setLocalDescription(offer);
-        const sdp = offer.sdp.replaceAll("\r\n", "\n");
-            const rtc_connection_id = uuidv4();
+        webRtcConn.onGatheringStateChange((state) => {
+            if (state !== "complete")
+                return;
+            const sdp = webRtcConn.localDescription()!.sdp;
+            const rtc_connection_id = randomUUID();
             this.sendOpcode(VoiceOpCodes.SELECT_PROTOCOL, {
                 protocol: "webrtc",
                 codecs: Object.values(CodecPayloadType) as ValueOf<typeof CodecPayloadType>[],
@@ -552,6 +552,8 @@ a=ice-lite
                 sdp: sdp,
                 rtc_connection_id
             });
+        })
+        webRtcConn.setLocalDescription();
         return new Promise((resolve) => {
             this.once("select_protocol_ack", () => resolve());
         });

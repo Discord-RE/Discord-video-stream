@@ -1,4 +1,4 @@
-import { RTCPeerConnection, RTCRtpCodecParameters, RTCRtpSender, MediaStream, MediaStreamTrack } from 'werift';
+import { PeerConnection, Audio, Video, type Track } from "node-datachannel";
 import { CodecPayloadType } from "./CodecPayloadType.js";
 import { AudioPacketizer } from '../packet/AudioPacketizer.js';
 import {
@@ -10,35 +10,31 @@ import { normalizeVideoCodec } from '../../utils.js';
 import type { BaseMediaPacketizer } from '../packet/BaseMediaPacketizer.js';
 import type { BaseMediaConnection } from './BaseMediaConnection.js';
 
-const rtpCodecParameters = Object.fromEntries(
-  Object.entries(CodecPayloadType).map(([name, { clockRate, payload_type, type }]) => [
-    name, new RTCRtpCodecParameters({
-      mimeType: `${type}/${name}`,
-      clockRate,
-      payloadType: payload_type,
-      channels: type === "audio" ? 2 : undefined
-    })
-  ])
-) as Record<keyof typeof CodecPayloadType, RTCRtpCodecParameters>
-
 export class WebRtcConnWrapper {
-  private _webRtcConn;
   private _mediaConn: BaseMediaConnection;
+
+  private _webRtcConn;
+  private _audioDef: Audio;
+  private _videoDef: Video;
+  private _audioTrack: Track;
+  private _videoTrack: Track;
   private _audioPacketizer?: BaseMediaPacketizer;
   private _videoPacketizer?: BaseMediaPacketizer;
-  private _audioRtcRtpSender?: RTCRtpSender;
-  private _videoRtcRtpSender?: RTCRtpSender;
 
   constructor(mediaConn: BaseMediaConnection) {
     this._mediaConn = mediaConn;
-    this._webRtcConn = new RTCPeerConnection({
-      codecs: {
-        audio: Object.values(rtpCodecParameters)
-          .filter(el => el.mimeType.startsWith("audio")),
-        video: Object.values(rtpCodecParameters)
-          .filter(el => el.mimeType.startsWith("video")),
-      }
+    this._webRtcConn = new PeerConnection("", {
+      iceServers: ['stun:stun.l.google.com:19302']
     });
+    this._audioDef = new Audio("0", "SendRecv");
+    this._videoDef = new Video("1", "SendRecv");
+    this._audioDef.addOpusCodec(CodecPayloadType.opus.payload_type);
+    for (const { name, payload_type, rtx_payload_type, clockRate } of Object.values(CodecPayloadType).filter(el => el.type === "video")) {
+      this._videoDef.addVideoCodec(payload_type, name);
+      this._videoDef.addRTXCodec(rtx_payload_type, payload_type, clockRate);
+    }
+    this._audioTrack = this._webRtcConn.addTrack(this._audioDef);
+    this._videoTrack = this._webRtcConn.addTrack(this._videoDef);
   }
 
   public close() {
@@ -50,7 +46,7 @@ export class WebRtcConnWrapper {
   }
 
   public get ready() {
-    return this._webRtcConn.connectionState == "connected";
+    return this._webRtcConn.state() === "connected";
   }
 
   public get mediaConnection() {
@@ -70,33 +66,28 @@ export class WebRtcConnWrapper {
   public setPacketizer(videoCodec: string): void {
     if (!this.mediaConnection.webRtcParams)
       throw new Error("WebRTC connection not ready");
-    this._audioRtcRtpSender && this._webRtcConn.removeTrack(this._audioRtcRtpSender);
-    this._videoRtcRtpSender && this._webRtcConn.removeTrack(this._videoRtcRtpSender);
+    // This is only dependent on SSRC, so move this somewhere else
     const { audioSsrc, videoSsrc } = this.mediaConnection.webRtcParams;
-    const videoCodecNormalized = normalizeVideoCodec(videoCodec);
-    const audioTrack = new MediaStreamTrack({
-      kind: "audio",
-      codec: rtpCodecParameters.opus,
-      ssrc: audioSsrc
-    })
-    const videoTrack = new MediaStreamTrack({
-      kind: "video",
-      codec: rtpCodecParameters[videoCodecNormalized],
-      ssrc: videoSsrc
-    })
-    const mediaStream = new MediaStream([audioTrack, videoTrack]);
-    this._audioRtcRtpSender = this._webRtcConn.addTrack(audioTrack, mediaStream);
-    this._videoRtcRtpSender = this._webRtcConn.addTrack(videoTrack, mediaStream);
-    this._audioPacketizer = new AudioPacketizer(audioTrack, this._mediaConn);
+    this._audioDef.addSSRC(audioSsrc);
+    this._videoDef.addSSRC(videoSsrc);
+
+    this._audioPacketizer = new AudioPacketizer({
+      ssrc: audioSsrc, mediaConn: this.mediaConnection, track: this._audioTrack
+    });
+    const videoPacketizerParams = {
+      ssrc: videoSsrc,
+      mediaConn: this.mediaConnection,
+      track: this._videoTrack
+    }
     switch (normalizeVideoCodec(videoCodec)) {
       case "H264":
-        this._videoPacketizer = new VideoPacketizerH264(videoTrack, this._mediaConn);
+        this._videoPacketizer = new VideoPacketizerH264(videoPacketizerParams);
         break;
       case "H265":
-        this._videoPacketizer = new VideoPacketizerH265(videoTrack, this._mediaConn);
+        this._videoPacketizer = new VideoPacketizerH265(videoPacketizerParams);
         break;
       case "VP8":
-        this._videoPacketizer = new VideoPacketizerVP8(videoTrack, this._mediaConn);
+        this._videoPacketizer = new VideoPacketizerVP8(videoPacketizerParams);
         break;
       default:
         throw new Error(`Packetizer not implemented for ${videoCodec}`)

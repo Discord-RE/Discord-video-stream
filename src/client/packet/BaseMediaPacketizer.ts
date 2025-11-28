@@ -1,10 +1,17 @@
 import { Log } from "debug-level";
 import { max_int16bit, max_int32bit } from "../../utils.js";
 import { RtpHeader, Extension, RtpPacket, RtcpSrPacket, RtcpSenderInfo } from "werift-rtp";
-import type { MediaStreamTrack } from "werift";
+import type { Track } from "node-datachannel"
 import type { BaseMediaConnection } from "../voice/BaseMediaConnection.js";
 
 const ntpEpoch = new Date("Jan 01 1900 GMT").getTime();
+
+export type PacketizerParams = {
+    track: Track,
+    mediaConn: BaseMediaConnection,
+    ssrc: number,
+    payloadType: number
+}
 
 export class BaseMediaPacketizer {
     protected static extensions = [
@@ -23,12 +30,17 @@ export class BaseMediaPacketizer {
     private _currentMediaTimestamp: number;
     private _srInterval: number;
 
-    protected _track: MediaStreamTrack;
+    private _ssrc: number;
+    private _payloadType: number;
+    private _track: Track;
     protected _mediaConn: BaseMediaConnection;
 
-    constructor(track: MediaStreamTrack, mediaConn: BaseMediaConnection) {
+    constructor(params: PacketizerParams) {
+        const { track, mediaConn, ssrc, payloadType } = params;
         this._track = track;
         this._mediaConn = mediaConn;
+        this._ssrc = ssrc;
+        this._payloadType = payloadType;
         this._sequence = 0;
         this._timestamp = 0;
         this._totalBytes = 0;
@@ -41,12 +53,7 @@ export class BaseMediaPacketizer {
     }
 
     public get ssrc(): number | undefined {
-        return this._track.ssrc
-    }
-
-    public set ssrc(value: number) {
-        this._track.ssrc = value;
-        this._totalBytes = this._totalPackets = 0;
+        return this._ssrc
     }
 
     /**
@@ -92,7 +99,7 @@ export class BaseMediaPacketizer {
     }
 
     protected sendPacket(packet: RtpPacket) {
-        this._track.writeRtp(packet);
+        this._track.sendMessageBinary(packet.serialize());
         return packet.serializeSize;
     }
 
@@ -134,7 +141,8 @@ export class BaseMediaPacketizer {
             marker: isLastPacket,
             sequenceNumber: this.getNewSequence(),
             timestamp: Math.round(this._timestamp),
-            ssrc: this.ssrc
+            ssrc: this.ssrc,
+            payloadType: this._payloadType
         })
         return header;
     }

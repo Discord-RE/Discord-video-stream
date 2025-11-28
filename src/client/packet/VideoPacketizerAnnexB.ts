@@ -4,11 +4,11 @@ import {
     H265Helpers,
     type AnnexBHelpers
 } from "../processing/AnnexBHelper.js";
+import { CodecPayloadType } from "../voice/CodecPayloadType.js";
 import { splitNalu } from "../processing/AnnexBHelper.js";
 import { MediaType, Codec } from "@snazzah/davey";
 import { RtpPacket } from "werift-rtp";
-import type { MediaStreamTrack } from "werift";
-import type { BaseMediaConnection } from "../voice/BaseMediaConnection.js";
+import type { PacketizerParams } from "./BaseMediaPacketizer.js";
 
 /**
  * Annex B format
@@ -62,8 +62,11 @@ import type { BaseMediaConnection } from "../voice/BaseMediaConnection.js";
 abstract class VideoPacketizerAnnexB extends BaseMediaPacketizer {
     private _nalFunctions: AnnexBHelpers;
 
-    constructor(track: MediaStreamTrack, mediaConn: BaseMediaConnection, nalFunctions: AnnexBHelpers) {
-        super(track, mediaConn);
+    constructor(
+        params: PacketizerParams,
+        nalFunctions: AnnexBHelpers
+    ) {
+        super(params);
         this._nalFunctions = nalFunctions;
     }
 
@@ -166,8 +169,8 @@ abstract class VideoPacketizerAnnexB extends BaseMediaPacketizer {
 }
 
 export class VideoPacketizerH264 extends VideoPacketizerAnnexB {
-    constructor(track: MediaStreamTrack, mediaConn: BaseMediaConnection) {
-        super(track, mediaConn, H264Helpers);
+    constructor(params: Omit<PacketizerParams, "payloadType">) {
+        super({ ...params, payloadType: CodecPayloadType.H264.payload_type }, H264Helpers);
     }
     public override async sendFrame(frame: Buffer, frametime: number): Promise<void> {
         const { daveReady, daveSession } = this._mediaConn;
@@ -239,8 +242,8 @@ export class VideoPacketizerH264 extends VideoPacketizerAnnexB {
 }
 
 export class VideoPacketizerH265 extends VideoPacketizerAnnexB {
-    constructor(track: MediaStreamTrack, mediaConn: BaseMediaConnection) {
-        super(track, mediaConn, H265Helpers);
+    constructor(params: Omit<PacketizerParams, "payloadType">) {
+        super({ ...params, payloadType: CodecPayloadType.H265.payload_type }, H265Helpers);
     }
     public override async sendFrame(frame: Buffer, frametime: number): Promise<void> {
         const { daveReady, daveSession } = this._mediaConn;

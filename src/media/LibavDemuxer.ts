@@ -158,10 +158,10 @@ export async function demux(input: Readable, {
         switch (vStream.codec_id)
         {
             case AVCodecID.AV_CODEC_ID_H264:
-                bsf = "h264_mp4toannexb,dump_extra";
+                bsf = "h264_mp4toannexb,h264_metadata=aud=remove,dump_extra";
                 break;
             case AVCodecID.AV_CODEC_ID_HEVC:
-                bsf = "hevc_mp4toannexb,dump_extra";
+                bsf = "hevc_mp4toannexb,hevc_metadata=aud=remove,dump_extra";
                 break;
         }
         vbsf = await libav.av_bsf_list_parse_str_js(bsf);

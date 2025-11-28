@@ -1,11 +1,11 @@
 import { BaseMediaPacketizer } from "./BaseMediaPacketizer.js";
 import { RtpPacket } from "werift-rtp";
-import type { MediaStreamTrack } from "werift";
-import type { BaseMediaConnection } from "../voice/BaseMediaConnection.js"
+import { CodecPayloadType } from "../voice/CodecPayloadType.js";
+import type { PacketizerParams } from "./BaseMediaPacketizer.js";
 
 export class AudioPacketizer extends BaseMediaPacketizer {
-    constructor(audioTrack: MediaStreamTrack, mediaConn: BaseMediaConnection) {
-        super(audioTrack, mediaConn);
+    constructor(params: Omit<PacketizerParams, "payloadType">) {
+        super({ ...params, payloadType: CodecPayloadType.opus.payload_type });
     }
 
     public override async sendFrame(frame: Buffer, frametime: number): Promise<void> {
