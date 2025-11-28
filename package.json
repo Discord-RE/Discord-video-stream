@@ -18,7 +18,7 @@
         "debug-level": "^3.2.1",
         "fluent-ffmpeg": "^2.1.3",
         "node-datachannel": "^0.30.0",
-        "p-map": "^7.0.4",
+        "p-debounce": "^5.1.0",
         "sharp": "^0.33.5",
         "sodium-plus": "^0.9.0",
         "uid": "^2.0.2",
