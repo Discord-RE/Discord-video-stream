@@ -540,10 +540,7 @@ a=ice-lite
         //     encryptionMode = SupportedEncryptionModes.XCHACHA20
         // }
         const { webRtcConn } = this._webRtcWrapper;
-        webRtcConn.onGatheringStateChange((state) => {
-            if (state !== "complete")
-                return;
-            const sdp = webRtcConn.localDescription()!.sdp;
+        webRtcConn.onLocalDescription((sdp) => {
             const rtc_connection_id = randomUUID();
             this.sendOpcode(VoiceOpCodes.SELECT_PROTOCOL, {
                 protocol: "webrtc",
