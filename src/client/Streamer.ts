@@ -12,30 +12,13 @@ type EmitterEvents = {
     [K in GatewayEvent["t"]]: (data: Extract<GatewayEvent, { t: K }>["d"]) => void
 }
 
-export type StreamerOptions = {
-    /**
-     * Force the use of ChaCha20 encryption. Faster on CPUs without AES-NI
-     */
-    forceChacha20Encryption: boolean;
-    /**
-     * Enable RTCP Sender Report for synchronization
-     */
-    rtcpSenderReportEnabled: boolean
-}
-
 export class Streamer {
     private _voiceConnection?: VoiceConnection;
     private _client: Client;
-    private _opts: StreamerOptions;
     private _gatewayEmitter = new EventEmitter() as TypedEmitter.default<EmitterEvents>
 
-    constructor(client: Client, opts?: Partial<StreamerOptions>) {
+    constructor(client: Client) {
         this._client = client;
-        this._opts = {
-            forceChacha20Encryption: false,
-            rtcpSenderReportEnabled: true,
-            ...opts
-        };
 
         //listen for messages
         this.client.on('raw', (packet: GatewayEvent) => {
@@ -48,8 +31,8 @@ export class Streamer {
         return this._client;
     }
 
-    public get opts(): StreamerOptions {
-        return this._opts;
+    public get opts() {
+        return {};
     }
 
     public get voiceConnection(): VoiceConnection | undefined {

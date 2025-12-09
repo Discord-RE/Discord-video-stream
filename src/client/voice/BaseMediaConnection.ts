@@ -51,6 +51,7 @@ export abstract class BaseMediaConnection extends EventEmitter {
 
     private _webRtcWrapper;
     private _webRtcParams: WebRtcParameters | null = null;
+    private _closed = false;
     public ready: (conn: WebRtcConnWrapper) => void;
 
     private _streamer: Streamer;
@@ -108,6 +109,8 @@ export abstract class BaseMediaConnection extends EventEmitter {
     public abstract get daveChannelId(): string;
 
     stop(): void {
+        this._closed = true
+        this._webRtcWrapper.close();
         this.ws?.close();
     }
 
@@ -155,13 +158,15 @@ export abstract class BaseMediaConnection extends EventEmitter {
 
                 this.interval && clearInterval(this.interval);
                 this.status.started = false;
-                this._webRtcWrapper?.close();
-
                 const canResume = code === 4_015 || code < 4_000;
 
                 if (canResume && wasStarted) {
                     this.status.resuming = true;
                     this.start();
+                }
+                else {
+                    this._closed = true;
+                    this._webRtcWrapper?.close();
                 }
             })
             this.setupEvents();
@@ -254,8 +259,8 @@ a=ice-lite
             `a=rtcp-fb:${el.payload_type} goog-remb`,
             `a=rtcp-fb:${el.payload_type} transport-cc`
         ]).join('\n');
-        this._webRtcWrapper.webRtcConn.setRemoteDescription(
-            [audioSection,videoSection,videoRtpMap].join("\n").replaceAll("\n", "\r\n"),
+        this._webRtcWrapper.webRtcConn?.setRemoteDescription(
+            [audioSection,videoSection,videoRtpMap].join("\n"),
             "answer"
         );
         this.emit("select_protocol_ack");
@@ -525,10 +530,6 @@ a=ice-lite
     ** Uses opus for audio
     */
     public async setProtocols(): Promise<void> {
-        // select encryption mode
-        // From Discord docs: 
-        // You must support aead_xchacha20_poly1305_rtpsize. You should prefer to use aead_aes256_gcm_rtpsize when it is available.
-        // let encryptionMode: SupportedEncryptionModes;
         if (!this._webRtcParams)
             throw new Error("WebRTC parameters not set");
         // if (
@@ -539,18 +540,26 @@ a=ice-lite
         // } else {
         //     encryptionMode = SupportedEncryptionModes.XCHACHA20
         // }
-        const { webRtcConn } = this._webRtcWrapper;
-        webRtcConn.onLocalDescription((sdp) => {
-            const rtc_connection_id = randomUUID();
-            this.sendOpcode(VoiceOpCodes.SELECT_PROTOCOL, {
-                protocol: "webrtc",
-                codecs: Object.values(CodecPayloadType) as ValueOf<typeof CodecPayloadType>[],
-                data: sdp,
-                sdp: sdp,
-                rtc_connection_id
-            });
-        })
-        webRtcConn.setLocalDescription();
+
+        const reconnect = () => {
+            const webRtcConn = this._webRtcWrapper.initWebRtc();
+            webRtcConn.onStateChange((state) => {
+                if (state === "closed" && !this._closed)
+                    reconnect();
+            })
+            webRtcConn.onLocalDescription((sdp) => {
+                const rtc_connection_id = randomUUID();
+                this.sendOpcode(VoiceOpCodes.SELECT_PROTOCOL, {
+                    protocol: "webrtc",
+                    codecs: Object.values(CodecPayloadType) as ValueOf<typeof CodecPayloadType>[],
+                    data: sdp,
+                    sdp: sdp,
+                    rtc_connection_id
+                });
+            })
+            webRtcConn.setLocalDescription();
+        }
+        reconnect();
         return new Promise((resolve) => {
             this.once("select_protocol_ack", () => resolve());
         });
