@@ -1,6 +1,7 @@
 import {
   PeerConnection,
-  Audio, Video,
+  Audio,
+  Video,
   RtpPacketizer,
   H264RtpPacketizer,
   H265RtpPacketizer,
@@ -12,10 +13,15 @@ import {
 } from "node-datachannel";
 import { Codec, MediaType } from "@snazzah/davey";
 import { CodecPayloadType } from "./CodecPayloadType.js";
-import { normalizeVideoCodec, type SupportedVideoCodec } from '../../utils.js';
-import { splitNalu, H264Helpers, H264NalUnitTypes, startCode3 } from "../processing/AnnexBHelper.js";
+import { normalizeVideoCodec, type SupportedVideoCodec } from "../../utils.js";
+import {
+  splitNalu,
+  H264Helpers,
+  H264NalUnitTypes,
+  startCode3,
+} from "../processing/AnnexBHelper.js";
 import { rewriteSPSVUI } from "../processing/SPSVUIRewriter.js";
-import type { BaseMediaConnection } from './BaseMediaConnection.js';
+import type { BaseMediaConnection } from "./BaseMediaConnection.js";
 
 export class WebRtcConnWrapper {
   private _mediaConn: BaseMediaConnection;
@@ -34,9 +40,13 @@ export class WebRtcConnWrapper {
     this._audioDef = new Audio("0", "SendRecv");
     this._videoDef = new Video("1", "SendRecv");
     this._audioDef.addOpusCodec(CodecPayloadType.opus.payload_type);
-    for (const { name, payload_type, rtx_payload_type, clockRate } of Object.values(CodecPayloadType).filter(el => el.type === "video")) {
-      switch (name)
-      {
+    for (const {
+      name,
+      payload_type,
+      rtx_payload_type,
+      clockRate,
+    } of Object.values(CodecPayloadType).filter((el) => el.type === "video")) {
+      switch (name) {
         case "H264":
           this._videoDef.addH264Codec(payload_type);
           break;
@@ -59,7 +69,7 @@ export class WebRtcConnWrapper {
 
   public initWebRtc() {
     this._webRtcConn = new PeerConnection("", {
-      iceServers: ['stun:stun.l.google.com:19302']
+      iceServers: ["stun:stun.l.google.com:19302"],
     });
     this._audioTrack = this._webRtcConn.addTrack(this._audioDef);
     this._videoTrack = this._webRtcConn.addTrack(this._videoDef);
@@ -91,44 +101,36 @@ export class WebRtcConnWrapper {
   }
 
   public sendAudioFrame(frame: Buffer, frametime: number) {
-    if (!this.ready)
-      return;
-    if (!this._audioPacketizer)
-      return;
+    if (!this.ready) return;
+    if (!this._audioPacketizer) return;
     const { rtpConfig } = this._audioPacketizer;
     const { clockRate } = rtpConfig;
     if (this.mediaConnection.daveReady)
       frame = this.mediaConnection.daveSession!.encryptOpus(frame);
     this._audioTrack?.sendMessageBinary(frame);
-    rtpConfig.timestamp += Math.round(frametime * clockRate / 1000);
+    rtpConfig.timestamp += Math.round((frametime * clockRate) / 1000);
   }
 
   public sendVideoFrame(frame: Buffer, frametime: number) {
-    if (!this.ready)
-      return;
-    if (!this._videoPacketizer)
-      return;
+    if (!this.ready) return;
+    if (!this._videoPacketizer) return;
     const { rtpConfig } = this._videoPacketizer;
     const { clockRate } = rtpConfig;
-    if (this._videoCodec == "H264")
-    {
+    if (this._videoCodec === "H264") {
       let spsRewritten = false;
-      const nalus = splitNalu(frame).map(el => {
-        if (H264Helpers.getUnitType(el) === H264NalUnitTypes.SPS)
-        {
+      const nalus = splitNalu(frame).map((el) => {
+        if (H264Helpers.getUnitType(el) === H264NalUnitTypes.SPS) {
           spsRewritten = true;
           return rewriteSPSVUI(el);
         }
         return el;
       });
       if (spsRewritten)
-        frame = Buffer.concat(nalus.flatMap(el => [startCode3, el]));
+        frame = Buffer.concat(nalus.flatMap((el) => [startCode3, el]));
     }
-    if (this.mediaConnection.daveReady)
-    {
-      let daveCodec;
-      switch (this._videoCodec)
-      {
+    if (this.mediaConnection.daveReady) {
+      let daveCodec = Codec.UNKNOWN;
+      switch (this._videoCodec) {
         case "H264":
           daveCodec = Codec.H264;
           break;
@@ -144,14 +146,15 @@ export class WebRtcConnWrapper {
         case "AV1":
           daveCodec = Codec.AV1;
           break;
-        default:
-          daveCodec = Codec.UNKNOWN;
-          break;
       }
-      frame = this.mediaConnection.daveSession!.encrypt(MediaType.VIDEO, daveCodec, frame);
+      frame = this.mediaConnection.daveSession!.encrypt(
+        MediaType.VIDEO,
+        daveCodec,
+        frame,
+      );
     }
     this._videoTrack?.sendMessageBinary(frame);
-    rtpConfig.timestamp += Math.round(frametime * clockRate / 1000);
+    rtpConfig.timestamp += Math.round((frametime * clockRate) / 1000);
   }
 
   public setPacketizer(videoCodec: string): void {
@@ -159,7 +162,10 @@ export class WebRtcConnWrapper {
       throw new Error("WebRTC connection not ready");
     const { audioSsrc, videoSsrc } = this.mediaConnection.webRtcParams;
     const rtpConfigAudio = new RtpPacketizationConfig(
-      audioSsrc, "", CodecPayloadType.opus.payload_type, CodecPayloadType.opus.clockRate
+      audioSsrc,
+      "",
+      CodecPayloadType.opus.payload_type,
+      CodecPayloadType.opus.clockRate,
     );
     this._audioPacketizer = new RtpPacketizer(rtpConfigAudio);
     this._audioPacketizer.addToChain(new RtcpSrReporter(rtpConfigAudio));
@@ -167,18 +173,24 @@ export class WebRtcConnWrapper {
 
     this._videoCodec = normalizeVideoCodec(videoCodec);
     const rtpConfigVideo = new RtpPacketizationConfig(
-      videoSsrc, "",
+      videoSsrc,
+      "",
       CodecPayloadType[this._videoCodec].payload_type,
       CodecPayloadType[this._videoCodec].clockRate,
     );
 
-    switch (this._videoCodec)
-    {
+    switch (this._videoCodec) {
       case "H264":
-        this._videoPacketizer = new H264RtpPacketizer("StartSequence", rtpConfigVideo);
+        this._videoPacketizer = new H264RtpPacketizer(
+          "StartSequence",
+          rtpConfigVideo,
+        );
         break;
       case "H265":
-        this._videoPacketizer = new H265RtpPacketizer("StartSequence", rtpConfigVideo);
+        this._videoPacketizer = new H265RtpPacketizer(
+          "StartSequence",
+          rtpConfigVideo,
+        );
         break;
       case "AV1":
         this._videoPacketizer = new AV1RtpPacketizer("Obu", rtpConfigVideo);

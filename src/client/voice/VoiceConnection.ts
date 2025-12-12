@@ -1,19 +1,19 @@
-import { BaseMediaConnection } from './BaseMediaConnection.js';
-import type { StreamConnection } from './StreamConnection.js';
+import { BaseMediaConnection } from "./BaseMediaConnection.js";
+import type { StreamConnection } from "./StreamConnection.js";
 
 export class VoiceConnection extends BaseMediaConnection {
-    public streamConnection?: StreamConnection;
+  public streamConnection?: StreamConnection;
 
-    public override get daveChannelId() {
-        return this.channelId;
-    }
+  public override get daveChannelId() {
+    return this.channelId;
+  }
 
-    public override get serverId(): string {
-        return this.guildId ?? this.channelId; // for guild vc it is the guild id, for dm voice it is the channel id
-    }
+  public override get serverId(): string {
+    return this.guildId ?? this.channelId; // for guild vc it is the guild id, for dm voice it is the channel id
+  }
 
-    public override stop(): void {
-        super.stop();
-        this.streamConnection?.stop();
-    }
+  public override stop(): void {
+    super.stop();
+    this.streamConnection?.stop();
+  }
 }
