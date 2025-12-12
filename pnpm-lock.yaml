@@ -32,9 +32,6 @@ importers:
       uid:
         specifier: ^2.0.2
         version: 2.0.2
-      ws:
-        specifier: ^8.18.0
-        version: 8.18.0
       zeromq:
         specifier: ^6.4.2
         version: 6.4.2
@@ -48,9 +45,6 @@ importers:
       '@types/node':
         specifier: ^20.17.1
         version: 20.17.16
-      '@types/ws':
-        specifier: ^8.5.12
-        version: 8.5.14
       discord.js-selfbot-v13:
         specifier: ^3.6.0
         version: 3.6.0
@@ -429,9 +423,6 @@ packages:
 
   '@types/node@20.17.16':
     resolution: {integrity: sha512-vOTpLduLkZXePLxHiHsBLp98mHGnl8RptV4YAO3HfKO5UHjDvySGbxKtpYfy8Sx5+WKcgc45qNreJJRVM3L6mw==}
-
-  '@types/ws@8.5.14':
-    resolution: {integrity: sha512-bd/YFLW+URhBzMXurx7lWByOu+xzU9+kb3RboOteXYDfW+tr+JZa99OyNmPINEGB/ahzKrEuc8rcv4gnpJmxTw==}
 
   acorn@8.14.0:
     resolution: {integrity: sha512-cl669nCJTZBsL97OF4kUQm5g5hC2uihk0NxY3WENAC0TYdILVkAyHymAntgxGkl7K+t0cXIrH5siy5S4XkFycA==}
@@ -1332,10 +1323,6 @@ snapshots:
   '@types/node@20.17.16':
     dependencies:
       undici-types: 6.19.8
-
-  '@types/ws@8.5.14':
-    dependencies:
-      '@types/node': 20.17.16
 
   acorn@8.14.0: {}
 

@@ -21,14 +21,12 @@
         "p-debounce": "^5.1.0",
         "sharp": "^0.33.5",
         "uid": "^2.0.2",
-        "ws": "^8.18.0",
         "zeromq": "^6.4.2"
     },
     "devDependencies": {
         "@biomejs/biome": "^1.9.4",
         "@types/fluent-ffmpeg": "^2.1.27",
         "@types/node": "^20.17.1",
-        "@types/ws": "^8.5.12",
         "discord.js-selfbot-v13": "^3.6.0",
         "pkg-pr-new": "^0.0.39",
         "typed-emitter": "^2.1.0",
@@ -38,7 +36,7 @@
         "discord.js-selfbot-v13": "^3.6.0"
     },
     "engines": {
-        "node": ">=21.0.0"
+        "node": ">=22.4.0"
     },
     "scripts": {
         "build": "tsc",

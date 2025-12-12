@@ -1,6 +1,5 @@
 import Davey from "@snazzah/davey"
 import EventEmitter from "node:events";
-import WebSocket from 'ws';
 import { Log } from "debug-level";
 import { randomUUID } from "node:crypto";
 import { CodecPayloadType } from "./CodecPayloadType.js";
@@ -9,7 +8,6 @@ import { VoiceOpCodes, VoiceOpCodesBinary } from "./VoiceOpCodes.js";
 import { STREAMS_SIMULCAST, SupportedEncryptionModes } from "../../utils.js";
 import type { Message, GatewayRequest, GatewayResponse } from "./VoiceMessageTypes.js";
 import type { Streamer } from "../Streamer.js";
-
 
 type VoiceConnectionStatus = {
     hasSession: boolean;
@@ -139,10 +137,9 @@ export abstract class BaseMediaConnection extends EventEmitter {
                 return
             this.status.started = true;
 
-            this.ws = new WebSocket(`wss://${this.server}/?v=8`, {
-                followRedirects: true
-            });
-            this.ws.on("open", () => {
+            this.ws = new WebSocket(`wss://${this.server}/?v=8`);
+            this.ws.binaryType = "arraybuffer";
+            this.ws.addEventListener("open", () => {
                 if (this.status.resuming) {
                     this.status.resuming = false;
                     this.resume();
@@ -150,15 +147,15 @@ export abstract class BaseMediaConnection extends EventEmitter {
                     this.identify();
                 }
             })
-            this.ws.on("error", (err) => {
+            this.ws.addEventListener("error", (err) => {
                 console.error(err);
             })
-            this.ws.on("close", (code) => {
+            this.ws.addEventListener("close", (e) => {
                 const wasStarted = this.status.started;
 
                 this.interval && clearInterval(this.interval);
                 this.status.started = false;
-                const canResume = code === 4_015 || code < 4_000;
+                const canResume = e.code === 4_015 || e.code < 4_000;
 
                 if (canResume && wasStarted) {
                     this.status.resuming = true;
@@ -315,17 +312,12 @@ a=ice-lite
     }
 
     setupEvents(): void {
-        this.ws?.on('message', (data, isBinary) => {
-            if (isBinary) {
-                if (data instanceof Buffer)
-                    this.handleBinaryMessages(data)
-                else if (data instanceof ArrayBuffer)
-                    this.handleBinaryMessages(Buffer.from(data))
-                else if (Array.isArray(data))
-                    this.handleBinaryMessages(Buffer.concat(data))
+        this.ws?.addEventListener('message', async (e) => {
+            if (e.data instanceof ArrayBuffer) {                
+                this.handleBinaryMessages(Buffer.from(e.data))
                 return;
             }
-            const { op, d, seq } = JSON.parse(data.toString()) as GatewayResponse;
+            const { op, d, seq } = JSON.parse(e.data as string) as GatewayResponse;
             if (seq)
                 this._sequenceNumber = seq;
 
