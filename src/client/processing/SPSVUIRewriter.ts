@@ -200,18 +200,18 @@ export function rewriteSPSVUI(buffer: Buffer)
     const video_signal_type_present_flag = readBit(1);
     writeBit(0, 1);
     if (video_signal_type_present_flag) {
-      const video_format = readBit(3);
+      const _video_format = readBit(3);
       // writeBit(video_format, 3);
-      const video_full_range_flag = readBit(1);
+      const _video_full_range_flag = readBit(1);
       // writeBit(video_full_range_flag, 1);
       const colour_description_present_flag = readBit(1);
       // writeBit(colour_description_present_flag, 1);
       if (colour_description_present_flag) {
-        const colour_primaries = readU(8);
+        const _colour_primaries = readU(8);
         // writeU(colour_primaries, 8);
-        const transfer_characteristics = readU(8);
+        const _transfer_characteristics = readU(8);
         // writeU(transfer_characteristics, 8);
-        const matrix_coeffs = readU(8);
+        const _matrix_coeffs = readU(8);
         // writeU(matrix_coeffs, 8);
       }
     }
@@ -317,9 +317,9 @@ export function rewriteSPSVUI(buffer: Buffer)
       writeUE(log2_max_mv_length_horizontal);
       const log2_max_mv_length_vertical = readUE();
       writeUE(log2_max_mv_length_vertical);
-      const num_reorder_frames = readUE();
+      const _num_reorder_frames = readUE();
       writeUE(0);
-      const max_dec_frame_buffering = readUE();
+      const _max_dec_frame_buffering = readUE();
       writeUE(max_num_ref_frames);
     }
   }

@@ -7,7 +7,7 @@ export class AnnexBBitstreamReader {
     this._buffer = buffer;
   }
   public readBits(count: number) {
-    if (count == 0)
+    if (count === 0)
       return 0;
     let result = 0;
     while (count > 0)
@@ -15,10 +15,10 @@ export class AnnexBBitstreamReader {
       if (this._byteOffset >= this._buffer.length)
         throw new Error("Bad byte offset")
       if (
-        this._bitOffset == 0 && this._byteOffset >= 2
-        && this._buffer[this._byteOffset - 2] == 0
-        && this._buffer[this._byteOffset - 1] == 0
-        && this._buffer[this._byteOffset]     == 3
+        this._bitOffset === 0 && this._byteOffset >= 2
+        && this._buffer[this._byteOffset - 2] === 0
+        && this._buffer[this._byteOffset - 1] === 0
+        && this._buffer[this._byteOffset]     === 3
       )
       {
         // Skip over emulation prevention
@@ -62,7 +62,7 @@ export class AnnexBBitstreamReader {
   public readUnsignedExpGolomb()
   {
     let leading0 = 0;
-    while (this.readBits(1) == 0)
+    while (this.readBits(1) === 0)
       leading0++;
 
     return (1 << leading0) + this.readBits(leading0) - 1;
@@ -71,7 +71,7 @@ export class AnnexBBitstreamReader {
   {
     // Mapping: x <= 0 => -2x, x > 0 => 2x - 1
     const unsigned = this.readUnsignedExpGolomb();
-    if (unsigned % 2 == 0)
+    if (unsigned % 2 === 0)
       return unsigned / -2;
     return (unsigned + 1) / 2;
   }
@@ -89,7 +89,7 @@ export class AnnexBBitstreamWriter {
   public flush()
   {
     // Write the pending byte into the array and reset, taking care of emulation prevention
-    if (this._pendingByte <= 3 && this._arr.at(-1) == 0 && this._arr.at(-2) == 0)
+    if (this._pendingByte <= 3 && this._arr.at(-1) === 0 && this._arr.at(-2) === 0)
       this._arr.push(3);
     this._arr.push(this._pendingByte);
     this._pendingByte = 0;
@@ -98,7 +98,7 @@ export class AnnexBBitstreamWriter {
   public writeBits(bits: number, count: number) {
     while (count > 0)
     {
-      if (this._bitOffset == 0)
+      if (this._bitOffset === 0)
       {
         if (count >= 8)
         {
@@ -124,7 +124,7 @@ export class AnnexBBitstreamWriter {
         this._pendingByte |= bitsToWrite << (8 - this._bitOffset - numBitsToWrite);
         count -= numBitsToWrite;
         this._bitOffset += numBitsToWrite;
-        if (this._bitOffset == 8)
+        if (this._bitOffset === 8)
         {
           this._bitOffset = 0;
           this.flush();

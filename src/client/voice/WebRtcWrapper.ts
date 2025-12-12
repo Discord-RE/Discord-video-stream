@@ -110,7 +110,7 @@ export class WebRtcConnWrapper {
       return;
     const { rtpConfig } = this._videoPacketizer;
     const { clockRate } = rtpConfig;
-    if (this._videoCodec == "H264")
+    if (this._videoCodec === "H264")
     {
       let spsRewritten = false;
       const nalus = splitNalu(frame).map(el => {
@@ -126,7 +126,7 @@ export class WebRtcConnWrapper {
     }
     if (this.mediaConnection.daveReady)
     {
-      let daveCodec;
+      let daveCodec = Codec.UNKNOWN;
       switch (this._videoCodec)
       {
         case "H264":
@@ -143,9 +143,6 @@ export class WebRtcConnWrapper {
           break;
         case "AV1":
           daveCodec = Codec.AV1;
-          break;
-        default:
-          daveCodec = Codec.UNKNOWN;
           break;
       }
       frame = this.mediaConnection.daveSession!.encrypt(MediaType.VIDEO, daveCodec, frame);

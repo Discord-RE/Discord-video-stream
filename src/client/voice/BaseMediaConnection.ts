@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { CodecPayloadType } from "./CodecPayloadType.js";
 import { WebRtcConnWrapper } from "./WebRtcWrapper.js";
 import { VoiceOpCodes, VoiceOpCodesBinary } from "./VoiceOpCodes.js";
-import { STREAMS_SIMULCAST, SupportedEncryptionModes } from "../../utils.js";
+import { STREAMS_SIMULCAST, type SupportedEncryptionModes } from "../../utils.js";
 import type { Message, GatewayRequest, GatewayResponse } from "./VoiceMessageTypes.js";
 import type { Streamer } from "../Streamer.js";
 
@@ -189,7 +189,7 @@ export abstract class BaseMediaConnection extends EventEmitter {
         this._daveProtocolVersion = d.dave_protocol_version;
         this.initDave();
         // Discord's SDP is absolute garbage...Generate one ourselves
-        let ip, port, iceUsername, icePassword, fingerprint, candidate;
+        let ip = "", port = "", iceUsername = "", icePassword = "", fingerprint = "", candidate = "";
         for (const line of d.sdp.split("\n")) {
             if (line.startsWith("c="))
                 ip = line;
@@ -345,7 +345,7 @@ a=ice-lite
                 this.status.started = true;
             }
             else if (op === VoiceOpCodes.CLIENTS_CONNECT) {
-                d.user_ids.forEach(id => this._connectedUsers.add(id));
+                d.user_ids.forEach(id => { this._connectedUsers.add(id); });
             }
             else if (op === VoiceOpCodes.CLIENT_DISCONNECT) {
                 this._connectedUsers.delete(d.user_id)
@@ -407,7 +407,7 @@ a=ice-lite
                 {
                     const transitionId = msg.readUInt16BE(3);
                     try {
-                        this._daveSession!.processCommit(msg.subarray(5));
+                        this._daveSession?.processCommit(msg.subarray(5));
                         if (transitionId) {
                             this._davePendingTransitions.set(transitionId, this._daveProtocolVersion);
                             this.sendOpcode(VoiceOpCodes.DAVE_TRANSITION_READY, { transition_id: transitionId });
@@ -424,7 +424,7 @@ a=ice-lite
                 {
                     const transitionId = msg.readUInt16BE(3);
                     try {
-                        this._daveSession!.processWelcome(msg.subarray(5));
+                        this._daveSession?.processWelcome(msg.subarray(5));
                         if (transitionId) {
                             this._davePendingTransitions.set(transitionId, this._daveProtocolVersion);
                             this.sendOpcode(VoiceOpCodes.DAVE_TRANSITION_READY, { transition_id: transitionId });

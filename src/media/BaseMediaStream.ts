@@ -63,7 +63,7 @@ export class BaseMediaStream extends Writable {
             return;
         this._syncTolerance = n;
     }
-    protected async _sendFrame(frame: Buffer, frametime: number): Promise<void>
+    protected async _sendFrame(_frame: Buffer, _frametime: number): Promise<void>
     {
         throw new Error("Not implemented");
     }
@@ -85,14 +85,12 @@ export class BaseMediaStream extends Writable {
     }
     async _write(frame: Packet, _: BufferEncoding, callback: (error?: Error | null) => void) {
         const { data, ptshi, pts, durationhi, duration, time_base_num, time_base_den } = frame;
-        // biome-ignore lint/style/noNonNullAssertion: this will never happen with our media stream
         const frametime = combineLoHi(durationhi!, duration!) / time_base_den! * time_base_num! * 1000;
 
         const start_sendFrame = performance.now();
         await this._sendFrame(Buffer.from(data), frametime);
         const end_sendFrame = performance.now();
 
-        // biome-ignore lint/style/noNonNullAssertion: this will never happen with our media stream
         this._pts = combineLoHi(ptshi!, pts!) / time_base_den! * time_base_num! * 1000;
         this.emit("pts", this._pts);
 

@@ -1,6 +1,5 @@
 // https://ffmpeg.org/doxygen/7.0/codec__id_8h_source.html
 
-// biome-ignore lint/style/useEnumInitializers: copied from upstream ffmpeg
 export enum AVCodecID {
     AV_CODEC_ID_NONE,
 

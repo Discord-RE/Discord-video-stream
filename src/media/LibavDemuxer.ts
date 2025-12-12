@@ -219,7 +219,7 @@ export async function demux(input: Readable, {
                 const stream_index = await libav.AVPacket_stream_index(packet);
                 if (vInfo && vInfo.index === stream_index) {
                     const packet_bsf: Packet[] = await libav.ff_bsf_multi(vbsf, pkt, [packet]);
-                    packet_bsf.forEach((packet) => resume &&= vPipe.write(packet));
+                    packet_bsf.forEach((packet) => { resume &&= vPipe.write(packet) });
                     loggerFrameVideo.trace("Pushed a frame into the video pipe");
                     // packet is freed by ff_copyin_packet
                 }
@@ -241,7 +241,7 @@ export async function demux(input: Readable, {
                 {
                     loggerFrameCommon.info("Reached end of stream. Stopping");
                     const packet_bsf: Packet[] = await libav.ff_bsf_multi(vbsf, pkt, [], { fin: true });
-                    packet_bsf.forEach((packet) => resume &&= vPipe.write(packet));
+                    packet_bsf.forEach((packet) => { resume &&= vPipe.write(packet) });
                 }
                 else
                 {

@@ -130,7 +130,7 @@ export class Streamer {
             );
             this.voiceConnection.streamConnection = streamConn;
             this._gatewayEmitter.on("STREAM_CREATE", (d) => {
-                const { type, channelId, guildId, userId } = parseStreamKey(d.stream_key);
+                const { channelId, guildId, userId } = parseStreamKey(d.stream_key);
 
                 if (
                     clientGuildId !== guildId ||
@@ -144,7 +144,7 @@ export class Streamer {
                 streamConn.setSession(session_id);
             });
             this._gatewayEmitter.on("STREAM_SERVER_UPDATE", (d) => {
-                const { type, channelId, guildId, userId } = parseStreamKey(d.stream_key);
+                const { channelId, guildId, userId } = parseStreamKey(d.stream_key);
 
                 if (
                     clientGuildId !== guildId ||
