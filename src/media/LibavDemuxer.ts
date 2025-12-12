@@ -1,7 +1,7 @@
 import pDebounce from "p-debounce";
 import LibAV, { type CodecParameters, type Packet } from "@lng2004/libav.js-variant-webcodecs-avf-with-decoders";
 import { Log } from "debug-level";
-import { uid } from "uid";
+import { randomUUID } from "node:crypto";
 import { AVCodecID } from "./LibavCodecId.js";
 import { PassThrough } from "node:stream";
 import type { Readable } from "node:stream";
@@ -110,7 +110,7 @@ export async function demux(input: Readable, {
     const loggerFrameAudio = new Log("demux:frame:audio");
 
     const libav = await libavInstance;
-    const filename = uid();
+    const filename = randomUUID();
     await libav.mkreaderdev(filename);
     idToStream.set(filename, input);
 

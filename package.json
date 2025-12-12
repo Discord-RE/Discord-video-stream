@@ -20,7 +20,6 @@
         "node-datachannel": "^0.31.0",
         "p-debounce": "^5.1.0",
         "sharp": "^0.33.5",
-        "uid": "^2.0.2",
         "zeromq": "^6.4.2"
     },
     "devDependencies": {
