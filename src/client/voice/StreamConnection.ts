@@ -16,6 +16,13 @@ export class StreamConnection extends BaseMediaConnection
         });
     }
 
+    public override get daveChannelId() {
+        if (this._serverId === null)
+            throw new Error("Server ID not set (this shouldn't happen)");
+        const channelId = BigInt(this._serverId) - 1n;
+        return channelId.toString();
+    }
+
     public override get serverId(): string | null {
         return this._serverId;
     }

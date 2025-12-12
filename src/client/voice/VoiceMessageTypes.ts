@@ -42,7 +42,8 @@ export namespace Message {
         session_id: string,
         token: string,
         video: boolean,
-        streams: SimulcastInfo[]
+        streams: SimulcastInfo[],
+        max_dave_protocol_version?: number
     }
 
     export type Resume = {
@@ -58,13 +59,19 @@ export namespace Message {
     }
 
     export type SelectProtocol = {
-        protocol: string,
+        protocol: "udp",
         codecs: CodecPayloadType[],
         data: {
             address: string,
             port: number,
             mode: SupportedEncryptionModes
         }
+    } | {
+        protocol: "webrtc",
+        codecs: CodecPayloadType[],
+        data: string,
+        sdp: string,
+        rtc_connection_id: string
     }
 
     export type Video = {
@@ -109,14 +116,49 @@ export namespace Message {
     }
 
     export type SelectProtocolAck = {
-        secret_key: number[],
         audio_codec: string,
         video_codec: string,
+        dave_protocol_version: number,
+    } & ({
+        secret_key: number[],
         mode: string,
-    }
+    } | {
+        media_session_id: number,
+        sdp: string,
+    })
 
     export type HeartbeatAck = {
         t: number
+    }
+
+    export type ClientsConnect = {
+        user_ids: string[]
+    }
+
+    export type ClientDisconnect = {
+        user_id: string
+    }
+
+    export type DavePrepareTransition = {
+        transition_id: number,
+        protocol_version: number
+    }
+
+    export type DaveExecuteTransition = {
+        transition_id: number,
+    }
+
+    export type DaveTransitionReady = {
+        transition_id: number
+    }
+
+    export type DavePrepareEpoch = {
+        epoch: number
+        protocol_version: number
+    }
+
+    export type MlsInvalidCommitWelcome = {
+        transition_id: number
     }
 }
 
@@ -132,6 +174,11 @@ export namespace GatewayResponse {
     export type Speaking = Generic<VoiceOpCodes.SPEAKING, Message.Speaking>
     export type SelectProtocolAck = Generic<VoiceOpCodes.SELECT_PROTOCOL_ACK, Message.SelectProtocolAck>
     export type HeartbeatAck = Generic<VoiceOpCodes.HEARTBEAT_ACK, Message.HeartbeatAck>
+    export type ClientsConnect = Generic<VoiceOpCodes.CLIENTS_CONNECT, Message.ClientsConnect>
+    export type ClientDisconnect = Generic<VoiceOpCodes.CLIENT_DISCONNECT, Message.ClientDisconnect>
+    export type DavePrepareTransition = Generic<VoiceOpCodes.DAVE_PREPARE_TRANSITION, Message.DavePrepareTransition>
+    export type DaveExecuteTransition = Generic<VoiceOpCodes.DAVE_EXECUTE_TRANSITION, Message.DaveExecuteTransition>
+    export type DavePrepareEpoch = Generic<VoiceOpCodes.DAVE_PREPARE_EPOCH, Message.DavePrepareEpoch>
 }
 
 export type GatewayResponse =
@@ -140,7 +187,12 @@ export type GatewayResponse =
     GatewayResponse.Resumed |
     GatewayResponse.Speaking |
     GatewayResponse.SelectProtocolAck |
-    GatewayResponse.HeartbeatAck
+    GatewayResponse.HeartbeatAck |
+    GatewayResponse.ClientsConnect |
+    GatewayResponse.ClientDisconnect |
+    GatewayResponse.DavePrepareTransition |
+    GatewayResponse.DaveExecuteTransition |
+    GatewayResponse.DavePrepareEpoch
 
 export namespace GatewayRequest {
     type Generic<Op extends VoiceOpCodes, T extends Record<string, unknown> | null> = {
@@ -153,6 +205,8 @@ export namespace GatewayRequest {
     export type SelectProtocol = Generic<VoiceOpCodes.SELECT_PROTOCOL, Message.SelectProtocol>
     export type Video = Generic<VoiceOpCodes.VIDEO, Message.Video>
     export type Speaking = Generic<VoiceOpCodes.SPEAKING, Message.Speaking>
+    export type DaveTransitionReady = Generic<VoiceOpCodes.DAVE_TRANSITION_READY, Message.DaveTransitionReady>
+    export type MlsInvalidCommitWelcome = Generic<VoiceOpCodes.MLS_INVALID_COMMIT_WELCOME, Message.MlsInvalidCommitWelcome>
 }
 
 export type GatewayRequest =
@@ -161,4 +215,6 @@ export type GatewayRequest =
     GatewayRequest.Heartbeat |
     GatewayRequest.SelectProtocol |
     GatewayRequest.Video |
-    GatewayRequest.Speaking
+    GatewayRequest.Speaking |
+    GatewayRequest.DaveTransitionReady |
+    GatewayRequest.MlsInvalidCommitWelcome

@@ -4,38 +4,21 @@ import { StreamConnection } from "./voice/StreamConnection.js";
 import { GatewayOpCodes } from "./GatewayOpCodes.js";
 import type TypedEmitter from "typed-emitter";
 import type { Client, DMChannel, GroupDMChannel, VoiceBasedChannel } from 'discord.js-selfbot-v13';
-import type { MediaUdp } from "./voice/MediaUdp.js";
 import type { GatewayEvent } from "./GatewayEvents.js";
+import type { WebRtcConnWrapper } from "./voice/WebRtcWrapper.js";
 import { generateStreamKey, parseStreamKey } from "../utils.js";
 
 type EmitterEvents = {
     [K in GatewayEvent["t"]]: (data: Extract<GatewayEvent, { t: K }>["d"]) => void
 }
 
-export type StreamerOptions = {
-    /**
-     * Force the use of ChaCha20 encryption. Faster on CPUs without AES-NI
-     */
-    forceChacha20Encryption: boolean;
-    /**
-     * Enable RTCP Sender Report for synchronization
-     */
-    rtcpSenderReportEnabled: boolean
-}
-
 export class Streamer {
     private _voiceConnection?: VoiceConnection;
     private _client: Client;
-    private _opts: StreamerOptions;
     private _gatewayEmitter = new EventEmitter() as TypedEmitter.default<EmitterEvents>
 
-    constructor(client: Client, opts?: Partial<StreamerOptions>) {
+    constructor(client: Client) {
         this._client = client;
-        this._opts = {
-            forceChacha20Encryption: false,
-            rtcpSenderReportEnabled: true,
-            ...opts
-        };
 
         //listen for messages
         this.client.on('raw', (packet: GatewayEvent) => {
@@ -48,8 +31,8 @@ export class Streamer {
         return this._client;
     }
 
-    public get opts(): StreamerOptions {
-        return this._opts;
+    public get opts() {
+        return {};
     }
 
     public get voiceConnection(): VoiceConnection | undefined {
@@ -63,7 +46,7 @@ export class Streamer {
         });
     }
 
-    public joinVoiceChannel(channel:  DMChannel | GroupDMChannel | VoiceBasedChannel): Promise<MediaUdp> {
+    public joinVoiceChannel(channel:  DMChannel | GroupDMChannel | VoiceBasedChannel): Promise<WebRtcConnWrapper> {
         let guildId: string | null = null;
 
         if(channel.type === "GUILD_STAGE_VOICE" || channel.type === "GUILD_VOICE") {
@@ -74,14 +57,14 @@ export class Streamer {
     }
 
     /**
-     * Joins a voice channel and returns a MediaUdp object.
+     * Joins a voice channel and returns a WebRtcConnWrapper object.
      * @param guild_id the guild id of the voice channel. If null, it will join a DM voice channel.
      * @param channel_id the channel id of the voice channel
-     * @returns the MediaUdp object
+     * @returns the WebRtcConnWrapper object
      * @throws Error if the client is not logged in
      */
-    public joinVoice(guild_id: string | null, channel_id: string): Promise<MediaUdp> {
-        return new Promise<MediaUdp>((resolve, reject) => {
+    public joinVoice(guild_id: string | null, channel_id: string): Promise<WebRtcConnWrapper> {
+        return new Promise<WebRtcConnWrapper>((resolve, reject) => {
             if (!this.client.user) {
                 reject("Client not logged in");
                 return;
@@ -92,8 +75,8 @@ export class Streamer {
                 guild_id,
                 user_id,
                 channel_id,
-                (udp) => {
-                    resolve(udp)
+                (conn) => {
+                    resolve(conn)
                 }
             );
             this._voiceConnection = voiceConn;
@@ -113,8 +96,8 @@ export class Streamer {
         });
     }
 
-    public createStream(): Promise<MediaUdp> {
-        return new Promise<MediaUdp>((resolve, reject) => {
+    public createStream(): Promise<WebRtcConnWrapper> {
+        return new Promise<WebRtcConnWrapper>((resolve, reject) => {
             if (!this.client.user) {
                 reject("Client not logged in");
                 return;
@@ -141,8 +124,8 @@ export class Streamer {
                 clientGuildId,
                 clientUserId,
                 clientChannelId,
-                (udp) => {
-                    resolve(udp)
+                (conn) => {
+                    resolve(conn)
                 }
             );
             this.voiceConnection.streamConnection = streamConn;

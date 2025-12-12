@@ -1,15 +1,15 @@
-import type { MediaUdp } from "../client/voice/MediaUdp.js";
 import { BaseMediaStream } from "./BaseMediaStream.js";
+import type { WebRtcConnWrapper } from "../client/voice/WebRtcWrapper.js";
 
 export class AudioStream extends BaseMediaStream {
-    public udp: MediaUdp;
+    private _conn: WebRtcConnWrapper;
 
-    constructor(udp: MediaUdp, noSleep = false) {
+    constructor(conn: WebRtcConnWrapper, noSleep = false) {
         super("audio", noSleep);
-        this.udp = udp;
+        this._conn = conn;
     }
 
     protected override async _sendFrame(frame: Buffer, frametime: number): Promise<void> {
-        await this.udp.sendAudioFrame(frame, frametime);
+        await this._conn.sendAudioFrame(frame, frametime);
     }
 }

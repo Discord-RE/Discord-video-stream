@@ -5,10 +5,6 @@ Fork: [Discord-video-experiment](https://github.com/mrjvs/Discord-video-experime
 > [!CAUTION]
 > Using any kind of automation programs on your account can result in your account getting permanently banned by Discord. Use at your own risk
 
-This project implements the custom Discord UDP protocol for sending media. Since Discord is likely change their custom protocol, this library is subject to break at any point. An effort will be made to keep this library up to date with the latest Discord protocol, but it is not guranteed.
-
-For better stability it is recommended to use WebRTC protocol instead since Discord is forced to adhere to spec, which means that the non-signaling portion of the code is guaranteed to work.
-
 ## Features
 
 - Playing video & audio in a voice channel (`Go Live`, or webcam video)
@@ -19,7 +15,7 @@ What I implemented and what I did not.
 
 ### Video codecs
 
-- [X] VP8
+- [ ] VP8 (once supported, removed for maintainability)
 - [ ] VP9
 - [X] H.264
 - [X] H.265
@@ -33,16 +29,16 @@ What I implemented and what I did not.
 ### Connection types
 
 - [X] Regular Voice Connection
-- [X] Go live
+- [X] Go Live
 
 ### Encryption
 
 - [X] Transport Encryption
-- [ ] [End-to-end Encryption](https://github.com/dank074/Discord-video-stream/issues/102)
+- [X] [End-to-end Encryption](https://github.com/dank074/Discord-video-stream/issues/102)
 
 ### Extras
 
-- [X] Figure out rtp header extensions (discord specific) (discord seems to use one-byte RTP header extension https://www.rfc-editor.org/rfc/rfc8285.html#section-4.2)
+- [X] Figure out RTP header extensions (discord specific) (discord seems to use [one-byte RTP header extension](https://www.rfc-editor.org/rfc/rfc8285.html#section-4.2))
 
 Extensions supported by Discord (taken from the webrtc sdp exchange)
 
@@ -64,6 +60,7 @@ Extensions supported by Discord (taken from the webrtc sdp exchange)
 ## Requirements
 
 For full functionality, this library requires an FFmpeg build with `libzmq` enabled. Here is our recommendation:
+
 - Windows & Linux: [BtbN's FFmpeg Builds](https://github.com/BtbN/FFmpeg-Builds)
 - macOS (Intel): [evermeet.cx](https://evermeet.cx/ffmpeg/)
 - macOS (Apple Silicon): Install from Homebrew
@@ -77,6 +74,9 @@ npm install @dank074/discord-video-stream@latest
 npm install discord.js-selfbot-v13@latest
 ```
 
+> [!IMPORTANT]
+> If you're using `pnpm`, you need to run `pnpm approve-builds` and approve `node-datachannel`, or else native dependencies will be missing and you'll get import errors
+
 Create a new Streamer, and pass it a selfbot Client
 
 ```typescript
@@ -85,7 +85,6 @@ import { Streamer } from '@dank074/discord-video-stream';
 
 const streamer = new Streamer(new Client());
 await streamer.client.login('TOKEN HERE');
-
 ```
 
 Make client join a voice channel
@@ -230,22 +229,6 @@ frameRate?: number,
 readrateInitialBurst?: number,
 ```
 
-## Streamer options available
-
-These control internal operations of the library, and can be changed through the `opts` property on the `Streamer` class. You probably shouldn't change it without a good reason
-
-```typescript
-/**
- * Enables sending RTCP sender reports. Helps the receiver synchronize the
- * audio/video frames, except in some weird cases which is why you can disable it
- */
-rtcpSenderReportEnabled?: boolean;
-/**
- * ChaCha20-Poly1305 Encryption is faster than AES-256-GCM, except when using AES-NI
- */
-forceChacha20Encryption?: boolean;
-```
-
 ## Performance tips
 
 See [this page](./PERFORMANCE.md) for some tips on improving performance
@@ -283,11 +266,11 @@ for example:
 $play-live http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4
 ```
 
-## FAQS
+## FAQs
 
 - Can I stream on existing voice connection (CAM) and in a go-live connection simultaneously?
 
-Yes, just send the media packets over both udp connections. The voice gateway expects you to signal when a user turns on their camera, so make sure you signal using `client.signalVideo(guildId, channelId, true)` before you start sending cam media packets.
+Yes, just send the media packets over both connections. The voice gateway expects you to signal when a user turns on their camera, so make sure you signal using `client.signalVideo(guildId, channelId, true)` before you start sending cam media packets.
 
 - Does this library work with bot tokens?
 

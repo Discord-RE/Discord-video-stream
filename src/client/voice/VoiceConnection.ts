@@ -1,8 +1,12 @@
-import type { StreamConnection } from './StreamConnection.js';
 import { BaseMediaConnection } from './BaseMediaConnection.js';
+import type { StreamConnection } from './StreamConnection.js';
 
 export class VoiceConnection extends BaseMediaConnection {
     public streamConnection?: StreamConnection;
+
+    public override get daveChannelId() {
+        return this.channelId;
+    }
 
     public override get serverId(): string {
         return this.guildId ?? this.channelId; // for guild vc it is the guild id, for dm voice it is the channel id

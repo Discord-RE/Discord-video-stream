@@ -2,6 +2,9 @@
 
 ## Transport encryption methods
 
+> [!NOTE]
+> This is no longer accurate as of [#195](https://github.com/Discord-RE/Discord-video-stream/pull/195), which replaces the custom UDP connection with standard WebRTC. This is kept here for historical purposes only.
+
 On CPUs without AES acceleration (very old x86 CPUs, certain ARM SoCs on single board computers, certain VMs that don't expose AES acceleration capability), the default encryption method (AES-256-GCM) might not be fast enough to handle high frame-rate + high bitrate streams.
 
 In such cases, you can enable the `forceChacha20Encryption` option on the `Streamer` instance (`streamer.opts.forceChacha20Encryption = true`) before starting a stream, to force the use of the faster Chacha20-Poly1305 encryption method. For even higher performance, also install the optional [`sodium-native`](https://www.npmjs.com/package/sodium-native) package to use the faster native version instead of the WASM version.
