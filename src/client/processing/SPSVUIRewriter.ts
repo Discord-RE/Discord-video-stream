@@ -1,7 +1,9 @@
-import { AnnexBBitstreamReader, AnnexBBitstreamWriter } from "./AnnexBBitstreamReaderWriter.js";
+import {
+  AnnexBBitstreamReader,
+  AnnexBBitstreamWriter,
+} from "./AnnexBBitstreamReaderWriter.js";
 
-export function rewriteSPSVUI(buffer: Buffer)
-{
+export function rewriteSPSVUI(buffer: Buffer) {
   const reader = new AnnexBBitstreamReader(buffer.subarray(1));
   const writer = new AnnexBBitstreamWriter();
 
@@ -30,7 +32,9 @@ export function rewriteSPSVUI(buffer: Buffer)
   writeUE(seq_parameter_set_id);
 
   // If profile in high profiles, additional fields
-  const highProfiles = new Set([100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 144]);
+  const highProfiles = new Set([
+    100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 144,
+  ]);
   if (highProfiles.has(profile_idc)) {
     const chroma_format_idc = readUE();
     writeUE(chroma_format_idc);
@@ -130,8 +134,7 @@ export function rewriteSPSVUI(buffer: Buffer)
   }
 
   // https://webrtc.googlesource.com/src/+/5f2c9278f35e47ff72eb191669d473b7400c9f3e/common_video/h264/sps_vui_rewriter.cc#283
-  function addBitstreamRestriction()
-  {
+  function addBitstreamRestriction() {
     // motion_vectors_over_pic_boundaries_flag: u(1)
     // Default is 1 when not present.
     writeBit(1, 1);
@@ -173,15 +176,15 @@ export function rewriteSPSVUI(buffer: Buffer)
     writeBit(1, 1);
 
     addBitstreamRestriction();
-  }
-  else {
+  } else {
     // VUI parsing and copying
     const aspect_ratio_info_present_flag = readBit(1);
     writeBit(aspect_ratio_info_present_flag, 1);
     if (aspect_ratio_info_present_flag) {
       const aspect_ratio_idc = readU(8);
       writeU(aspect_ratio_idc, 8);
-      if (aspect_ratio_idc === 255) { // Extended_SAR
+      if (aspect_ratio_idc === 255) {
+        // Extended_SAR
         const sar_width = readU(16);
         writeU(sar_width, 16);
         const sar_height = readU(16);
@@ -292,8 +295,7 @@ export function rewriteSPSVUI(buffer: Buffer)
       writeBit(time_offset_length, 5);
     }
 
-    if (nal_hrd_parameters_present_flag || vcl_hrd_parameters_present_flag)
-    {
+    if (nal_hrd_parameters_present_flag || vcl_hrd_parameters_present_flag) {
       const low_delay_hrd_flag = readBit(1);
       writeBit(low_delay_hrd_flag, 1);
     }
@@ -304,9 +306,8 @@ export function rewriteSPSVUI(buffer: Buffer)
     const bitstream_restriction_flag = readBit(1);
     writeBit(1, 1);
     if (!bitstream_restriction_flag) {
-      addBitstreamRestriction()
-    }
-    else {
+      addBitstreamRestriction();
+    } else {
       const motion_vectors_over_pic_boundaries_flag = readBit(1);
       writeBit(motion_vectors_over_pic_boundaries_flag, 1);
       const max_bytes_per_pic_denom = readUE();

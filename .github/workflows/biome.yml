@@ -1,4 +1,4 @@
-name: Linting
+name: Biome Lint & Format Check
 
 on:
   push:
