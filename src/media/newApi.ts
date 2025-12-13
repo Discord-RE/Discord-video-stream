@@ -344,7 +344,7 @@ export function prepareStream(
         receiveTimeout: 5000,
       });
       client.connect(zmqEndpoint);
-      promise.finally(() => client.disconnect(zmqEndpoint));
+      promise.catch(() => {}).finally(() => client.disconnect(zmqEndpoint));
       return client;
     });
   }
