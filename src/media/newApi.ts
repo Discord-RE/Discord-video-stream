@@ -1,7 +1,7 @@
-import ffmpeg from "fluent-ffmpeg";
 import pDebounce from "p-debounce";
 import sharp from "sharp";
 import Log from "debug-level";
+import { FFmpegCommand } from "fluent-ffmpeg-simplified";
 import { PassThrough, type Readable } from "node:stream";
 import { demux } from "./LibavDemuxer.js";
 import { VideoStream } from "./VideoStream.js";
@@ -202,19 +202,21 @@ export function prepareStream(
   const output = new PassThrough();
 
   // command creation
-  const command = ffmpeg(input).addOption("-loglevel", "info");
+  const command = new FFmpegCommand();
+  command.input(input);
+  command.inputOptions("-y", "-loglevel", "info", "-nostats");
 
   // input options
   const { hardwareAcceleratedDecoding, minimizeLatency, customHeaders } =
     mergedOptions;
-  if (hardwareAcceleratedDecoding) command.inputOption("-hwaccel", "auto");
+  if (hardwareAcceleratedDecoding) command.inputOptions("-hwaccel", "auto");
 
   if (minimizeLatency) {
-    command.addOptions(["-fflags nobuffer", "-analyzeduration 0"]);
+    command.inputOptions(["-fflags nobuffer", "-analyzeduration 0"]);
   }
 
   if (isHttpUrl) {
-    command.inputOption(
+    command.inputOptions(
       "-headers",
       Object.entries(customHeaders)
         .map(([k, v]) => `${k}: ${v}`)
@@ -231,11 +233,11 @@ export function prepareStream(
   }
 
   if (isSrt) {
-    command.inputOption("-scan_all_pmts 0");
+    command.inputOptions("-scan_all_pmts 0");
   }
 
   // general output options
-  command.output(output).outputFormat("nut");
+  command.output(output).format("nut");
 
   // video setup
   const {
@@ -248,16 +250,16 @@ export function prepareStream(
     videoCodec,
     encoder,
   } = mergedOptions;
-  command.addOutputOption("-map 0:v");
+  command.outputOptions("-map 0:v");
 
   if (noTranscoding) {
     command.videoCodec("copy");
   } else {
-    command.videoFilter(`scale=${width}:${height}`);
+    command.videoFilters(`scale=${width}:${height}`);
 
-    if (frameRate) command.fpsOutput(frameRate);
+    if (frameRate) command.fps(frameRate);
 
-    command.addOutputOption([
+    command.outputOptions([
       "-b:v",
       `${bitrateVideo}k`,
       "-maxrate:v",
@@ -282,14 +284,14 @@ export function prepareStream(
   const { includeAudio, bitrateAudio } = mergedOptions;
   if (includeAudio)
     command
-      .addOutputOption("-map 0:a?")
+      .outputOptions("-map 0:a?")
       .audioChannels(2)
       /*
        * I don't have much surround sound material to test this with,
        * if you do and you have better settings for this, feel free to
        * contribute!
        */
-      .addOutputOption("-lfe_mix_level 1")
+      .outputOptions("-lfe_mix_level 1")
       .audioFrequency(48000)
       .audioCodec("libopus")
       .audioBitrate(`${bitrateAudio}k`)
@@ -300,27 +302,8 @@ export function prepareStream(
     mergedOptions.customFfmpegFlags &&
     mergedOptions.customFfmpegFlags.length > 0
   ) {
-    command.addOptions(mergedOptions.customFfmpegFlags);
+    command.outputOptions(mergedOptions.customFfmpegFlags);
   }
-
-  // exit handling
-  const promise = new Promise<void>((resolve, reject) => {
-    command.on("error", (err) => {
-      if (cancelSignal?.aborted)
-        /**
-         * fluent-ffmpeg might throw an error when SIGTERM is sent to
-         * the process, so we check if the abort signal is triggered
-         * and throw that instead
-         */
-        reject(cancelSignal.reason);
-      else reject(err);
-    });
-    command.on("end", () => resolve());
-  });
-  promise.catch(() => {});
-  cancelSignal?.addEventListener("abort", () => command.kill("SIGTERM"), {
-    once: true,
-  });
 
   // realtime control mechanism
   let currentVolume = 1;
@@ -349,12 +332,12 @@ export function prepareStream(
     });
   }
 
-  command.run();
+  const promise = command.run(cancelSignal);
 
   return {
     command,
     output,
-    promise,
+    promise: promise as Promise<unknown>,
     controller: {
       get volume() {
         return currentVolume;
@@ -584,7 +567,7 @@ export async function playStream(
       cleanupFuncs.push(() => video.stream.off("data", updatePreview));
     })();
   }
-  return new Promise<void>((resolve, reject) => {
+  const promise = new Promise<void>((resolve, reject) => {
     cleanupFuncs.push(() => {
       stopStream();
       conn.mediaConnection.setSpeaking(false);
@@ -609,5 +592,7 @@ export async function playStream(
       cleanup();
       resolve();
     });
-  }).catch(() => {});
+  });
+  promise.catch(() => {});
+  return promise;
 }

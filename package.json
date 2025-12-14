@@ -16,7 +16,7 @@
         "@lng2004/libav.js-variant-webcodecs-avf-with-decoders": "6.8.8-simd-lto",
         "@snazzah/davey": "^0.1.8",
         "debug-level": "^4.1.1",
-        "fluent-ffmpeg": "^2.1.3",
+        "fluent-ffmpeg-simplified": "^0.0.3",
         "node-datachannel": "^0.31.0",
         "p-debounce": "^5.1.0",
         "sharp": "^0.34.5",
