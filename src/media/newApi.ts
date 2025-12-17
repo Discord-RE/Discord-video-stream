@@ -212,7 +212,12 @@ export function prepareStream(
   if (hardwareAcceleratedDecoding) command.inputOptions("-hwaccel", "auto");
 
   if (minimizeLatency) {
-    command.inputOptions(["-fflags nobuffer", "-analyzeduration 0"]);
+    command.inputOptions(
+      "-fflags nobuffer",
+      "-flags lowdelay",
+      "-flush_packets 1",
+      "-max_delay 100000"
+    );
   }
 
   if (isHttpUrl) {
