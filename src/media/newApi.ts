@@ -282,7 +282,7 @@ export function prepareStream(
   const { includeAudio, bitrateAudio } = mergedOptions;
   if (includeAudio)
     command
-      .addOutputOption("-map 0:a?")
+      .addOutputOption("-map 0:a:0?")
       .audioChannels(2)
       /*
        * I don't have much surround sound material to test this with,
