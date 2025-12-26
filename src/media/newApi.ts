@@ -202,7 +202,7 @@ export function prepareStream(
   const output = new PassThrough();
 
   // command creation
-  const command = ffmpeg(input).addOption("-loglevel", "info");
+  const command = ffmpeg(input);
 
   // input options
   const { hardwareAcceleratedDecoding, minimizeLatency, customHeaders } =
