@@ -2,6 +2,7 @@ import {
   PeerConnection,
   Audio,
   Video,
+  PacingHandler,
   RtpPacketizer,
   H264RtpPacketizer,
   H265RtpPacketizer,
@@ -10,7 +11,7 @@ import {
   RtcpNackResponder,
   RtcpSrReporter,
   type Track,
-} from "node-datachannel";
+} from "@lng2004/node-datachannel";
 import { Codec, MediaType } from "@snazzah/davey";
 import { CodecPayloadType } from "./CodecPayloadType.js";
 import { normalizeVideoCodec, type SupportedVideoCodec } from "../../utils.js";
@@ -200,6 +201,7 @@ export class WebRtcConnWrapper {
     }
     this._videoPacketizer.addToChain(new RtcpSrReporter(rtpConfigVideo));
     this._videoPacketizer.addToChain(new RtcpNackResponder());
+    this._videoPacketizer.addToChain(new PacingHandler(10 * 1000 * 1000, 1));
 
     this._setMediaHandler();
   }
