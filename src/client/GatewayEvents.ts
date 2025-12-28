@@ -42,3 +42,7 @@ export type GatewayEvent =
   | GatewayEvent.VoiceServerUpdate
   | GatewayEvent.StreamCreate
   | GatewayEvent.StreamServerUpdate;
+
+export type GatewayEventMap = {
+  [E in GatewayEvent as E['t']]: [E['d']];
+};
