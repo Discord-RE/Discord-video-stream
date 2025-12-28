@@ -96,9 +96,21 @@ await streamer.joinVoice("GUILD ID HERE", "CHANNEL ID HERE");
 Start sending media
 
 ```typescript
-import { prepareStream, playStream, Utils } from "@dank074/discord-video-stream"
+import { prepareStream, playStream, Utils, Encoders } from "@dank074/discord-video-stream"
 try {
+    // NVENC is also available, change Encoders.software to Encoders.nvenc and
+    // adapt the settings
+    let encoder = Encoders.software({
+        x264: {
+            preset: "superfast"
+        },
+        x265: {
+            preset: "superfast"
+        }
+    });
     const { command, output } = prepareStream("DIRECT VIDEO URL OR READABLE STREAM HERE", {
+        encoder,
+
         // Specify either width or height for aspect ratio aware scaling
         // Specify both for stretched output
         height: 1080,
@@ -107,8 +119,7 @@ try {
         frameRate: 30,
         bitrateVideo: 5000,
         bitrateVideoMax: 7500,
-        videoCodec: Utils.normalizeVideoCodec("H264" /* or H265, VP9 */),
-        h26xPreset: "veryfast" // or superfast, ultrafast, ...
+        videoCodec: Utils.normalizeVideoCodec("H264" /* or H265 */),
     });
     command.on("error", (err, stdout, stderr) => {
         // Handle ffmpeg errors here
@@ -127,6 +138,11 @@ try {
 ## Encoder options available
 
 ```typescript
+/**
+ * A function returning encoder settings for a specific avg and max bitrate
+ * You can define your own, or use the pre-made functions in the library
+ */
+encoder: EncoderSettingsGetter;
 /**
  * Disable transcoding of the video stream. If specified, all video related
  * options have no effects
@@ -172,10 +188,6 @@ hardwareAcceleratedDecoding?: boolean;
  * Output video codec. **Only** supports H264, H265, and VP8 currently
  */
 videoCodec?: SupportedVideoCodec;
-/**
- * Encoding preset for H264 or H265. The faster it is, the lower the quality
- */
-h26xPreset?: 'ultrafast' | 'superfast' | 'veryfast' | 'faster' | 'fast' | 'medium' | 'slow' | 'slower' | 'veryslow';
 /**
  * Adds ffmpeg params to minimize latency and start outputting video as fast as possible.
  * Might create lag in video output in some rare cases
