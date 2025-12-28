@@ -15,7 +15,7 @@ import { generateStreamKey, parseStreamKey } from "../utils.js";
 export class Streamer {
   private _voiceConnection?: VoiceConnection;
   private _client: Client;
-  private _gatewayEmitter = new EventEmitter<GatewayEventMap>()
+  private _gatewayEmitter = new EventEmitter<GatewayEventMap>();
 
   constructor(client: Client) {
     this._client = client;

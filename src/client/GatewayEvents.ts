@@ -44,5 +44,5 @@ export type GatewayEvent =
   | GatewayEvent.StreamServerUpdate;
 
 export type GatewayEventMap = {
-  [E in GatewayEvent as E['t']]: [E['d']];
+  [E in GatewayEvent as E["t"]]: [E["d"]];
 };
