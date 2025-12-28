@@ -149,11 +149,11 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
   let aInfo: AudioStreamInfo | undefined;
   const vPipe = new PassThrough({
     objectMode: true,
-    writableHighWaterMark: 128,
+    writableHighWaterMark: 32,
   });
   const aPipe = new PassThrough({
     objectMode: true,
-    writableHighWaterMark: 128,
+    writableHighWaterMark: 32,
   });
 
   let vbsf: number;
