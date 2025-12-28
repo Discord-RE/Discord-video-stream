@@ -170,7 +170,7 @@ export class WebRtcConnWrapper {
     );
     rtpConfigAudio.playoutDelayId = 5;
     rtpConfigAudio.playoutDelayMin = 0;
-    rtpConfigAudio.playoutDelayMax = 10;
+    rtpConfigAudio.playoutDelayMax = 1;
     this._audioPacketizer = new RtpPacketizer(rtpConfigAudio);
     this._audioPacketizer.addToChain(new RtcpSrReporter(rtpConfigAudio));
     this._audioPacketizer.addToChain(new RtcpNackResponder());
@@ -206,7 +206,7 @@ export class WebRtcConnWrapper {
     }
     this._videoPacketizer.addToChain(new RtcpSrReporter(rtpConfigVideo));
     this._videoPacketizer.addToChain(new RtcpNackResponder());
-    this._videoPacketizer.addToChain(new PacingHandler(15 * 1000 * 1000, 1));
+    this._videoPacketizer.addToChain(new PacingHandler(25 * 1000 * 1000, 1));
 
     this._setMediaHandler();
   }
