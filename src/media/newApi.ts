@@ -262,6 +262,8 @@ export function prepareStream(
       `${bitrateVideo}k`,
       "-maxrate:v",
       `${bitrateVideoMax}k`,
+      "-bufsize:v",
+      `${Math.round(bitrateVideo / 2)}k`,
       "-bf",
       "0",
       "-pix_fmt",
