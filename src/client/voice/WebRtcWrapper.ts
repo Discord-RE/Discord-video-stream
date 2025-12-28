@@ -2,6 +2,7 @@ import {
   PeerConnection,
   Audio,
   Video,
+  PacingHandler,
   RtpPacketizer,
   H264RtpPacketizer,
   H265RtpPacketizer,
@@ -10,7 +11,7 @@ import {
   RtcpNackResponder,
   RtcpSrReporter,
   type Track,
-} from "node-datachannel";
+} from "@lng2004/node-datachannel";
 import { Codec, MediaType } from "@snazzah/davey";
 import { CodecPayloadType } from "./CodecPayloadType.js";
 import { normalizeVideoCodec, type SupportedVideoCodec } from "../../utils.js";
@@ -167,6 +168,9 @@ export class WebRtcConnWrapper {
       CodecPayloadType.opus.payload_type,
       CodecPayloadType.opus.clockRate,
     );
+    rtpConfigAudio.playoutDelayId = 5;
+    rtpConfigAudio.playoutDelayMin = 0;
+    rtpConfigAudio.playoutDelayMax = 1;
     this._audioPacketizer = new RtpPacketizer(rtpConfigAudio);
     this._audioPacketizer.addToChain(new RtcpSrReporter(rtpConfigAudio));
     this._audioPacketizer.addToChain(new RtcpNackResponder());
@@ -178,7 +182,9 @@ export class WebRtcConnWrapper {
       CodecPayloadType[this._videoCodec].payload_type,
       CodecPayloadType[this._videoCodec].clockRate,
     );
-
+    rtpConfigVideo.playoutDelayId = 5;
+    rtpConfigVideo.playoutDelayMin = 0;
+    rtpConfigVideo.playoutDelayMax = 10;
     switch (this._videoCodec) {
       case "H264":
         this._videoPacketizer = new H264RtpPacketizer(
@@ -200,6 +206,7 @@ export class WebRtcConnWrapper {
     }
     this._videoPacketizer.addToChain(new RtcpSrReporter(rtpConfigVideo));
     this._videoPacketizer.addToChain(new RtcpNackResponder());
+    this._videoPacketizer.addToChain(new PacingHandler(25 * 1000 * 1000, 1));
 
     this._setMediaHandler();
   }
