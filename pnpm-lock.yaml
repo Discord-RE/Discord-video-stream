@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@lng2004/libav.js-variant-webcodecs-avf-with-decoders':
-        specifier: 6.8.8-simd-lto
-        version: 6.8.8-simd-lto
+        specifier: 6.8.8-demuxer-options
+        version: 6.8.8-demuxer-options
       '@lng2004/node-datachannel':
         specifier: 0.31.0-20251228.2
         version: 0.31.0-20251228.2
@@ -289,8 +289,8 @@ packages:
     resolution: {integrity: sha512-f5DRIOZf7wxogefH03RjMPMdBF7ADTWUMoOs9kaJo06EfwF+aFhMZMDZxHg/Xe12hptN9xoZjGso2fdjapBRIA==}
     engines: {node: '>=10'}
 
-  '@lng2004/libav.js-variant-webcodecs-avf-with-decoders@6.8.8-simd-lto':
-    resolution: {integrity: sha512-NhsOIIwhFyA/ffgw90YpMrqian+YxOyFLmQD2br02UJ7Bl0sNhkc7eRUhliDLM1BMZnDbNeqKT07I0OXxZD21Q==}
+  '@lng2004/libav.js-variant-webcodecs-avf-with-decoders@6.8.8-demuxer-options':
+    resolution: {integrity: sha512-5eKhe8GLvdcU1Y7oWQ+ZQOpZeAYosv2T9zDa7pF+K5IyB2WqG8X1jKXtD4/nkfqdjoiXDD4Fp++USS0pCoByRg==}
 
   '@lng2004/node-datachannel@0.31.0-20251228.2':
     resolution: {integrity: sha512-RwC8ux5XyLTJzcbkS+u2jQfHOH99nIrRX3wNWqxaQvsk6urji3dlVUvPYuaovxG4vBQhLdZ2TUv2DR1OecBZhg==}
@@ -1241,7 +1241,7 @@ snapshots:
       string-argv: 0.3.2
       type-detect: 4.1.0
 
-  '@lng2004/libav.js-variant-webcodecs-avf-with-decoders@6.8.8-simd-lto': {}
+  '@lng2004/libav.js-variant-webcodecs-avf-with-decoders@6.8.8-demuxer-options': {}
 
   '@lng2004/node-datachannel@0.31.0-20251228.2':
     dependencies:

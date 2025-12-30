@@ -13,7 +13,7 @@
         "access": "public"
     },
     "dependencies": {
-        "@lng2004/libav.js-variant-webcodecs-avf-with-decoders": "6.8.8-simd-lto",
+        "@lng2004/libav.js-variant-webcodecs-avf-with-decoders": "6.8.8-demuxer-options",
         "@lng2004/node-datachannel": "0.31.0-20251228.2",
         "@snazzah/davey": "^0.1.8",
         "debug-level": "^4.1.1",
