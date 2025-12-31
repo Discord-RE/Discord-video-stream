@@ -133,7 +133,6 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
   const pkt = await libav.av_packet_alloc();
 
   const cleanup = () => {
-    libav.av_dict_free_js(avDict);
     vPipe.off("drain", readFrame);
     aPipe.off("drain", readFrame);
     input.off("data", ondata);
