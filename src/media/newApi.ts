@@ -279,7 +279,7 @@ export function prepareStream(
       .videoCodec(encoderSettings.name)
       .videoFilter(encoderSettings.outFilters ?? [])
       .outputOptions(encoderSettings.options)
-      .outputOptions(encoderSettings.globalOptions ?? [])
+      .outputOptions(encoderSettings.globalOptions ?? []);
   }
 
   // audio setup

@@ -1,17 +1,17 @@
 import type { EncoderSettingsGetter } from "./index.js";
 
 type VaapiSettings = {
-  device?: string
+  device?: string;
 };
 
 export function vaapi({
-  device = "/dev/dri/renderD128"
+  device = "/dev/dri/renderD128",
 }: Partial<VaapiSettings> = {}) {
   const props = {
     options: [],
     globalOptions: ["-vaapi_device", device],
-    outFilters: ["format=nv12|vaapi", "hwupload"]
-  }
+    outFilters: ["format=nv12|vaapi", "hwupload"],
+  };
   return (() => ({
     H264: {
       name: "h264_vaapi",
@@ -19,11 +19,11 @@ export function vaapi({
     },
     H265: {
       name: "hevc_vaapi",
-      ...props
+      ...props,
     },
     AV1: {
       name: "av1_vaapi",
-      ...props
+      ...props,
     },
   })) as EncoderSettingsGetter;
 }
