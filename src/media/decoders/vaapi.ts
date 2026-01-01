@@ -8,7 +8,11 @@ export function vaapi({
   device = "/dev/dri/renderD128",
 }: Partial<VaapiSettings> = {}) {
   return {
-    scaler: (w, h) => ["format=nv12|vaapi", "hwupload", `scale_vaapi=w=${w}:h=${h}`],
+    scaler: (w, h) => [
+      "format=nv12|vaapi",
+      "hwupload",
+      `scale_vaapi=w=${w}:h=${h}`,
+    ],
     globalOptions: ["-hwaccel", "vaapi"],
     inputOptions: [
       "-hwaccel_device",
