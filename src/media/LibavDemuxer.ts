@@ -124,7 +124,12 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
   input.on("data", ondata);
   input.on("end", onend);
 
-  const [fmt_ctx, streams] = await libav.ff_init_demuxer_file(filename, format);
+  let avDict = 0;
+  avDict = await libav.av_dict_set_js(avDict, "fflags", "nobuffer", 0);
+  const [fmt_ctx, streams] = await libav.ff_init_demuxer_file(filename, {
+    format,
+    open_input_options: avDict,
+  });
   const pkt = await libav.av_packet_alloc();
 
   const cleanup = () => {
@@ -149,11 +154,11 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
   let aInfo: AudioStreamInfo | undefined;
   const vPipe = new PassThrough({
     objectMode: true,
-    writableHighWaterMark: 128,
+    writableHighWaterMark: 8,
   });
   const aPipe = new PassThrough({
     objectMode: true,
-    writableHighWaterMark: 128,
+    writableHighWaterMark: 8,
   });
 
   let vbsf: number;
