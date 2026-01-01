@@ -15,6 +15,7 @@ import type { Request } from "zeromq";
 import LibAV from "@lng2004/libav.js-variant-webcodecs-avf-with-decoders";
 import type { SupportedVideoCodec } from "../utils.js";
 import type { Streamer } from "../client/index.js";
+import type { DecoderSettings } from "./decoders/index.js";
 import type { EncoderSettingsGetter } from "./encoders/index.js";
 import type { VideoStreamInfo } from "./LibavDemuxer.js";
 import type { WebRtcConnWrapper } from "../client/voice/WebRtcWrapper.js";
@@ -81,7 +82,7 @@ export type PrepareStreamOptions = {
   /**
    * Enable hardware accelerated decoding
    */
-  hardwareAcceleratedDecoding: boolean;
+  hardwareAcceleratedDecoding: boolean | DecoderSettings;
 
   /**
    * Add some options to minimize latency
@@ -207,7 +208,18 @@ export function prepareStream(
   // input options
   const { hardwareAcceleratedDecoding, minimizeLatency, customHeaders } =
     mergedOptions;
-  if (hardwareAcceleratedDecoding) command.inputOption("-hwaccel", "auto");
+
+  let scalerUsed = "zscale";
+  if (hardwareAcceleratedDecoding) {
+    if (hardwareAcceleratedDecoding === true) {
+      command.addInputOption(["-hwaccel", "auto"]);
+    } else {
+      const { scaler, globalOptions, inputOptions } =
+        hardwareAcceleratedDecoding;
+      scalerUsed = scaler;
+      command.addInputOption(globalOptions ?? []).addInputOption(inputOptions);
+    }
+  }
 
   if (minimizeLatency) {
     command.addOptions(["-fflags nobuffer", "-analyzeduration 0"]);
@@ -253,7 +265,7 @@ export function prepareStream(
   if (noTranscoding) {
     command.videoCodec("copy");
   } else {
-    command.videoFilter(`scale=${width}:${height}`);
+    command.videoFilter(`${scalerUsed}=${width}:${height}`);
 
     if (frameRate) command.fpsOutput(frameRate);
 
