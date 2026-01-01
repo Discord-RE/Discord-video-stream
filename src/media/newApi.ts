@@ -209,7 +209,7 @@ export function prepareStream(
   const { hardwareAcceleratedDecoding, minimizeLatency, customHeaders } =
     mergedOptions;
 
-  let scalerUsed = "zscale";
+  let scalerUsed = (w: number, h: number) => [`zscale=w=${w}:h=${h}`];
   if (hardwareAcceleratedDecoding) {
     if (hardwareAcceleratedDecoding === true) {
       command.addInputOption(["-hwaccel", "auto"]);
@@ -265,7 +265,7 @@ export function prepareStream(
   if (noTranscoding) {
     command.videoCodec("copy");
   } else {
-    command.videoFilter(`${scalerUsed}=${width}:${height}`);
+    command.videoFilter(scalerUsed(width, height));
 
     if (frameRate) command.fpsOutput(frameRate);
 

@@ -1,5 +1,5 @@
 export type DecoderSettings = {
-  scaler: string;
+  scaler: (w: number, h: number) => string[];
   globalOptions?: string[];
   inputOptions: string[];
 };
