@@ -3,6 +3,8 @@ import type { SupportedVideoCodec } from "../../utils.js";
 export type EncoderSettings = {
   name: string;
   options: string[];
+  globalOptions?: string[];
+  outFilters?: string[];
 };
 
 export type EncoderSettingsGetter = (
@@ -12,11 +14,13 @@ export type EncoderSettingsGetter = (
 
 import { software } from "./software.js";
 import { nvenc } from "./nvenc.js";
+import { vaapi } from "./vaapi.js";
 import { merge } from "./merge.js";
 
 const Encoders = {
   software,
   nvenc,
+  vaapi,
   merge,
 };
 

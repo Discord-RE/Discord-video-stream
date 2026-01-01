@@ -277,7 +277,9 @@ export function prepareStream(
       throw new Error(`Encoder settings not specified for ${videoCodec}`);
     command
       .videoCodec(encoderSettings.name)
-      .outputOptions(encoderSettings.options);
+      .videoFilter(encoderSettings.outFilters ?? [])
+      .outputOptions(encoderSettings.options)
+      .outputOptions(encoderSettings.globalOptions ?? []);
   }
 
   // audio setup
