@@ -39,7 +39,9 @@
     "scripts": {
         "build": "tsc",
         "lint": "biome lint --error-on-warnings .",
-        "lint:fix": "biome lint --write ."
+        "lint:fix": "biome lint --write .",
+        "check": "biome check .",
+        "check:fix": "biome check --write ."
     },
     "keywords": [
         "discord",
