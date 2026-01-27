@@ -198,8 +198,13 @@ minimizeLatency?: boolean;
  */
 customHeaders?: Record<string, string>;
 /**
+   * Custom input options to pass directly to ffmpeg
+   * These will be added to the command *before* other options
+ */
+customInputOptions?: string[];
+/**
  * Custom ffmpeg flags/options to pass directly to ffmpeg
- * These will be added to the command after other options
+ * These will be added to the command *after* other options
  */
 customFfmpegFlags?: string[];
 ```
