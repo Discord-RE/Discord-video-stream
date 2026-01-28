@@ -116,13 +116,19 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
             once(input, "readable", { signal: cancel.signal }),
             finished(input, { cleanup: true, signal: cancel.signal })
           ]).finally(() => cancel.abort());
-          const buf: Buffer | null = await input.read();
-          if (buf) {
+          let hasData = false;
+          while (true) {
+            const buf: Buffer | null = await input.read();
+            if (!buf)
+              break;
             loggerInput.trace(
               `Received ${buf.length} bytes of data for input ${filename}`,
             );
             chunks.push(buf);
+            hasData = true;
           }
+          if (hasData)
+            continue;
           if (input.errored) {
             loggerInput.trace({ error: input.errored }, `An error occurred on input ${filename}`);
             return null;
