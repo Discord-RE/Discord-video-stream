@@ -1,12 +1,10 @@
 import pDebounce from "p-debounce";
-import LibAV, {
-  type CodecParameters,
-  type Packet,
-} from "@lng2004/libav.js-variant-webcodecs-avf-with-decoders";
+import { BitStreamFilterAPI, Demuxer, avGetCodecName } from "node-av";
 import { Log } from "debug-level";
 import { randomUUID } from "node:crypto";
 import { AVCodecID } from "./LibavCodecId.js";
 import { PassThrough } from "node:stream";
+import type { CodecParameters } from "node-av";
 import type { Readable } from "node:stream";
 
 type MediaStreamInfoCommon = {
@@ -87,14 +85,6 @@ function parseOpusPacketDuration(frame: Uint8Array) {
   return frameSize * frameCount;
 }
 
-const idToStream = new Map<string, Readable>();
-const libavInstance = LibAV.LibAV();
-libavInstance.then((libav) => {
-  libav.onread = (id) => {
-    idToStream.get(id)?.resume();
-  };
-});
-
 type DemuxerOptions = {
   format: "matroska" | "nut";
 };
@@ -106,50 +96,50 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
   const loggerFrameVideo = new Log("demux:frame:video");
   const loggerFrameAudio = new Log("demux:frame:audio");
 
-  const libav = await libavInstance;
   const filename = randomUUID();
-  await libav.mkreaderdev(filename);
-  idToStream.set(filename, input);
-
-  const ondata = (chunk: Buffer) => {
-    loggerInput.trace(
-      `Received ${chunk.length} bytes of data for input ${filename}`,
-    );
-    libav.ff_reader_dev_send(filename, chunk);
-  };
-  const onend = () => {
-    loggerInput.trace(`Reached the end of input ${filename}`);
-    libav.ff_reader_dev_send(filename, null);
-  };
-  input.on("data", ondata);
-  input.on("end", onend);
-
-  let avDict = 0;
-  avDict = await libav.av_dict_set_js(avDict, "fflags", "nobuffer", 0);
-  const [fmt_ctx, streams] = await libav.ff_init_demuxer_file(filename, {
-    format,
-    open_input_options: avDict,
-  });
-  const pkt = await libav.av_packet_alloc();
+  const inputIterator = input.iterator();
+  using demuxer = await Demuxer.open(
+    {
+      async read() {
+        try {
+          const { value, done } = await inputIterator.next();
+          if (done) {
+            loggerInput.trace(`Reached the end of input ${filename}`);
+            return null;
+          }
+          const buf = value as Buffer;
+          loggerInput.trace(
+            `Received ${buf.length} bytes of data for input ${filename}`,
+          );
+          return buf;
+        } catch (e) {
+          loggerInput.trace(`An error occurred on input ${filename}`, e);
+          return null;
+        }
+      },
+    },
+    {
+      options: {
+        fflags: "nobuffer",
+      },
+      format,
+    },
+  );
 
   const cleanup = () => {
+    input.destroy();
     vPipe.off("drain", readFrame);
     aPipe.off("drain", readFrame);
-    input.off("data", ondata);
-    input.off("end", onend);
-    idToStream.delete(filename);
-    vbsf && libav.av_bsf_free_js(vbsf);
-    libav.avformat_close_input_js(fmt_ctx);
-    libav.av_packet_free(pkt);
-    libav.unlink(filename);
+    vPipe.end();
+    aPipe.end();
+    vbsf.forEach((e) => {
+      e.close();
+    });
   };
 
-  const vStream = streams.find(
-    (stream) => stream.codec_type === libav.AVMEDIA_TYPE_VIDEO,
-  );
-  const aStream = streams.find(
-    (stream) => stream.codec_type === libav.AVMEDIA_TYPE_AUDIO,
-  );
+  const vStream = demuxer.video();
+  const aStream = demuxer.audio();
+
   let vInfo: VideoStreamInfo | undefined;
   let aInfo: AudioStreamInfo | undefined;
   const vPipe = new PassThrough({
@@ -161,46 +151,59 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
     writableHighWaterMark: 8,
   });
 
-  let vbsf: number;
+  const vbsf: BitStreamFilterAPI[] = [];
   if (vStream) {
-    if (!allowedVideoCodec.has(vStream.codec_id)) {
-      const codecName = await libav.avcodec_get_name(vStream.codec_id);
+    const codecId = vStream.codecpar.codecId;
+    if (!allowedVideoCodec.has(codecId)) {
+      const codecName = avGetCodecName(codecId);
       cleanup();
       throw new Error(`Video codec ${codecName} is not allowed`);
     }
-    let bsf = "null";
-    switch (vStream.codec_id) {
-      case AVCodecID.AV_CODEC_ID_H264:
-        bsf = "h264_mp4toannexb,h264_metadata=aud=remove,dump_extra";
-        break;
-      case AVCodecID.AV_CODEC_ID_HEVC:
-        bsf = "hevc_mp4toannexb,hevc_metadata=aud=remove,dump_extra";
-        break;
+    try {
+      switch (codecId) {
+        case AVCodecID.AV_CODEC_ID_H264:
+          vbsf.push(BitStreamFilterAPI.create("h264_mp4toannexb", vStream));
+          vbsf.push(
+            BitStreamFilterAPI.create("h264_metadata", vStream, {
+              options: {
+                aud: "remove",
+              },
+            }),
+          );
+          vbsf.push(BitStreamFilterAPI.create("dump_extra", vStream));
+          break;
+        case AVCodecID.AV_CODEC_ID_HEVC:
+          vbsf.push(BitStreamFilterAPI.create("hevc_mp4toannexb", vStream));
+          vbsf.push(
+            BitStreamFilterAPI.create("hevc_metadata", vStream, {
+              options: {
+                aud: "remove",
+              },
+            }),
+          );
+          vbsf.push(BitStreamFilterAPI.create("dump_extra", vStream));
+          break;
+        default:
+          vbsf.push(BitStreamFilterAPI.create("null", vStream));
+          break;
+      }
+      for (let i = 1; i < vbsf.length; ++i) vbsf[i - 1].pipeTo(vbsf[i]);
+    } catch (e) {
+      cleanup();
+      throw new Error(`Failed to construct bitstream filterchain`, {
+        cause: (e as Error).cause,
+      });
     }
-    vbsf = await libav.av_bsf_list_parse_str_js(bsf);
-    if (!vbsf)
-      throw new Error(`Failed to construct bitstream filterchain: ${bsf}`);
 
-    // av_bsf_free() will free par_in, so we have to make a copy of the original codecpar
-    const par_in = await libav.avcodec_parameters_alloc();
-    await libav.avcodec_parameters_copy(par_in, vStream.codecpar);
-    await libav.AVBSFContext_par_in_s(vbsf, par_in);
-    await libav.AVBSFContext_time_base_in_s(
-      vbsf,
-      vStream.time_base_num,
-      vStream.time_base_den,
-    );
-    await libav.av_bsf_init(vbsf);
-    const codecpar_ptr = await libav.AVBSFContext_par_out(vbsf);
-    const codecpar = await libav.ff_copyout_codecpar(codecpar_ptr);
+    const codecpar = vbsf.at(-1)?.outputCodecParameters ?? vStream.codecpar;
     vInfo = {
       index: vStream.index,
-      codec: vStream.codec_id,
+      codec: codecId,
       codecpar,
       width: codecpar.width ?? 0,
       height: codecpar.height ?? 0,
-      framerate_num: await libav.AVCodecParameters_framerate_num(codecpar_ptr),
-      framerate_den: await libav.AVCodecParameters_framerate_den(codecpar_ptr),
+      framerate_num: codecpar.frameRate.num,
+      framerate_den: codecpar.frameRate.den,
     };
     loggerFormat.info(
       {
@@ -210,17 +213,17 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
     );
   }
   if (aStream) {
-    if (!allowedAudioCodec.has(aStream.codec_id)) {
-      const codecName = await libav.avcodec_get_name(aStream.codec_id);
+    const codecId = aStream.codecpar.codecId;
+    if (!allowedAudioCodec.has(codecId)) {
+      const codecName = avGetCodecName(codecId);
       cleanup();
       throw new Error(`Audio codec ${codecName} is not allowed`);
     }
-    const codecpar = await libav.ff_copyout_codecpar(aStream.codecpar);
     aInfo = {
       index: aStream.index,
-      codec: aStream.codec_id,
-      codecpar,
-      sample_rate: codecpar.sample_rate ?? 0,
+      codec: codecId,
+      codecpar: aStream.codecpar,
+      sample_rate: aStream.codecpar.sampleRate || 0,
     };
     loggerFormat.info(
       {
@@ -230,62 +233,50 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
     );
   }
 
+  const packetIterator = demuxer.packets();
   const readFrame = pDebounce.promise(async () => {
+    const filterIn = vbsf.at(0)!;
+    const filterOut = vbsf.at(-1)!;
     let resume = true;
     while (resume) {
-      const [status, streams] = await libav.ff_read_frame_multi(fmt_ctx, pkt, {
-        limit: 1,
-        unify: true,
-        copyoutPacket: "ptr",
-      });
-      for (const packet of streams[0] ?? []) {
-        const stream_index = await libav.AVPacket_stream_index(packet);
-        if (vInfo && vInfo.index === stream_index) {
-          const packet_bsf: Packet[] = await libav.ff_bsf_multi(vbsf, pkt, [
-            packet,
-          ]);
-          packet_bsf.forEach((packet) => {
-            resume &&= vPipe.write(packet);
-          });
-          loggerFrameVideo.trace("Pushed a frame into the video pipe");
-          // packet is freed by ff_copyin_packet
-        } else if (aInfo && aInfo.index === stream_index) {
-          const packet_copyout = await libav.ff_copyout_packet(packet);
-          packet_copyout.duration ||= parseOpusPacketDuration(
-            packet_copyout.data,
-          );
-          resume &&= aPipe.write(packet_copyout);
-          loggerFrameAudio.trace("Pushed a frame into the audio pipe");
-          await libav.av_packet_free_js(packet);
-        } else {
-          // Free unused packets to prevent memory leak
-          await libav.av_packet_free_js(packet);
-        }
-      }
-      if (status < 0 && status !== -libav.EAGAIN) {
-        // End of file, or some error happened
-        if (status === LibAV.AVERROR_EOF) {
+      try {
+        const { value: inPacket, done } = await packetIterator.next();
+        if (done) {
           loggerFrameCommon.info("Reached end of stream. Stopping");
-          const packet_bsf: Packet[] = await libav.ff_bsf_multi(vbsf, pkt, [], {
-            fin: true,
-          });
-          packet_bsf.forEach((packet) => {
-            resume &&= vPipe.write(packet);
-          });
-        } else {
-          loggerFrameCommon.info(
-            { status },
-            "Received an error during frame extraction. Stopping",
-          );
+          filterIn.sendToQueue(null);
+          while (true) {
+            const packet = await filterOut.receiveFromQueue();
+            if (!packet) break;
+            vPipe.write(packet.clone());
+            packet.free();
+          }
+          cleanup();
+          return;
+        } else if (inPacket) {
+          const streamIndex = inPacket.streamIndex;
+          if (vInfo && vInfo.index === streamIndex) {
+            loggerFrameVideo.trace("Received a video packet");
+            filterIn.sendToQueue(inPacket);
+            while (true) {
+              const packet = await filterOut.receiveFromQueue();
+              if (!packet) break;
+              resume &&= vPipe.write(packet.clone());
+              packet.free();
+            }
+          } else if (aInfo && aInfo.index === streamIndex) {
+            const packet = inPacket.clone()!;
+            packet.duration ||= BigInt(parseOpusPacketDuration(packet.data!));
+            resume &&= aPipe.write(packet);
+          }
+          inPacket.free();
         }
+      } catch (e) {
+        loggerFrameCommon.info(
+          { error: e },
+          "Received an error during frame extraction. Stopping",
+        );
         cleanup();
-        vPipe.end();
-        aPipe.end();
         return;
-      }
-      if (!resume) {
-        input.pause();
-        loggerInput.trace("Input stream paused");
       }
     }
   });

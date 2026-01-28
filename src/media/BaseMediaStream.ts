@@ -1,8 +1,7 @@
 import { Log } from "debug-level";
 import { setTimeout } from "node:timers/promises";
 import { Writable } from "node:stream";
-import { combineLoHi } from "./utils.js";
-import type { Packet } from "@lng2004/libav.js-variant-webcodecs-avf-with-decoders";
+import { AV_TIME_BASE_Q, avRescaleQ, type Packet } from "node-av";
 
 export class BaseMediaStream extends Writable {
   private _pts?: number;
@@ -93,26 +92,15 @@ export class BaseMediaStream extends Writable {
     _: BufferEncoding,
     callback: (error?: Error | null) => void,
   ) {
-    const {
-      data,
-      ptshi,
-      pts,
-      durationhi,
-      duration,
-      time_base_num,
-      time_base_den,
-    } = frame;
+    const { data, pts, duration, timeBase } = frame;
     const frametime =
-      (combineLoHi(durationhi!, duration!) / time_base_den!) *
-      time_base_num! *
-      1000;
+      Number(avRescaleQ(duration, timeBase, AV_TIME_BASE_Q)) / 1000;
 
     const start_sendFrame = performance.now();
-    await this._sendFrame(Buffer.from(data), frametime);
+    await this._sendFrame(Buffer.from(data!), frametime);
     const end_sendFrame = performance.now();
 
-    this._pts =
-      (combineLoHi(ptshi!, pts!) / time_base_den!) * time_base_num! * 1000;
+    this._pts = Number(avRescaleQ(pts, timeBase, AV_TIME_BASE_Q)) / 1000;
     this.emit("pts", this._pts);
 
     const sendTime = end_sendFrame - start_sendFrame;
@@ -121,7 +109,7 @@ export class BaseMediaStream extends Writable {
       {
         stats: {
           pts: this._pts,
-          frame_size: data.length,
+          frame_size: data!.length,
           duration: sendTime,
           frametime,
         },
@@ -131,7 +119,7 @@ export class BaseMediaStream extends Writable {
     if (ratio > 1) {
       this._loggerSend.warn(
         {
-          frame_size: data.length,
+          frame_size: data!.length,
           duration: sendTime,
           frametime,
         },
