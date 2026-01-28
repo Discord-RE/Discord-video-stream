@@ -1,12 +1,11 @@
 import pDebounce from "p-debounce";
-import { BitStreamFilterAPI, Demuxer, avGetCodecName } from "node-av";
+import { BitStreamFilterAPI, Demuxer, avGetCodecName, type Stream } from "node-av";
 import { Log } from "debug-level";
 import { randomUUID } from "node:crypto";
 import { AVCodecID } from "./LibavCodecId.js";
 import { once } from "node:events";
 import { PassThrough } from "node:stream";
 import { finished } from "node:stream/promises";
-import { setImmediate } from "node:timers/promises";
 import type { CodecParameters, Packet } from "node-av";
 import type { Readable } from "node:stream";
 
@@ -14,7 +13,9 @@ type MediaStreamInfoCommon = {
   index: number;
   codec: AVCodecID;
   codecpar: CodecParameters;
+  avStream: Stream;
 };
+
 export type VideoStreamInfo = MediaStreamInfoCommon & {
   width: number;
   height: number;
@@ -233,6 +234,7 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
       height: codecpar.height ?? 0,
       framerate_num: codecpar.frameRate.num,
       framerate_den: codecpar.frameRate.den,
+      avStream: vStream,
     };
     loggerFormat.info(
       {
@@ -253,6 +255,7 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
       codec: codecId,
       codecpar: aStream.codecpar,
       sample_rate: aStream.codecpar.sampleRate || 0,
+      avStream: aStream,
     };
     loggerFormat.info(
       {
