@@ -181,6 +181,7 @@ export class BaseMediaStream extends Writable {
       );
       setTimeout(sleep).then(() => callback(null));
     }
+    frame.free();
   }
   _destroy(
     error: Error | null,
