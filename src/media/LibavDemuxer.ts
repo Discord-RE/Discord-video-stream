@@ -99,7 +99,6 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
   const loggerFrameAudio = new Log("demux:frame:audio");
 
   const filename = randomUUID();
-  const inputIterator = input.iterator();
   const demuxer = await Demuxer.open(
     {
       async read(size) {
@@ -131,6 +130,7 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
       options: {
         fflags: "nobuffer",
       },
+      bufferSize: 65536,
       format,
     },
   );
