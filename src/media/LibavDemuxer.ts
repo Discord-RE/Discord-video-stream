@@ -3,7 +3,9 @@ import { BitStreamFilterAPI, Demuxer, avGetCodecName } from "node-av";
 import { Log } from "debug-level";
 import { randomUUID } from "node:crypto";
 import { AVCodecID } from "./LibavCodecId.js";
+import { once } from "node:events";
 import { PassThrough } from "node:stream";
+import { finished } from "node:stream/promises";
 import type { CodecParameters, Packet } from "node-av";
 import type { Readable } from "node:stream";
 
@@ -100,21 +102,28 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
   const inputIterator = input.iterator();
   const demuxer = await Demuxer.open(
     {
-      async read() {
-        try {
-          const { value, done } = await inputIterator.next();
-          if (done) {
+      async read(size) {
+        while (true) {
+          const buf: Buffer | null = await input.read(size);
+          if (buf) {
+            loggerInput.trace(
+              `Received ${buf.length} bytes of data for input ${filename}`,
+            );
+            return buf;
+          }
+          if (input.errored) {
+            loggerInput.trace({ error: input.errored }, `An error occurred on input ${filename}`);
+            return null;
+          }
+          if (input.readableEnded) {
             loggerInput.trace(`Reached the end of input ${filename}`);
             return null;
           }
-          const buf = value as Buffer;
-          loggerInput.trace(
-            `Received ${buf.length} bytes of data for input ${filename}`,
-          );
-          return buf;
-        } catch (e) {
-          loggerInput.trace(`An error occurred on input ${filename}`, e);
-          return null;
+          const cancel = new AbortController();
+          await Promise.race([
+            once(input, "readable", { signal: cancel.signal }),
+            finished(input, { cleanup: true, signal: cancel.signal })
+          ]).finally(() => cancel.abort());
         }
       },
     },
