@@ -6,6 +6,7 @@ import { AVCodecID } from "./LibavCodecId.js";
 import { once } from "node:events";
 import { PassThrough } from "node:stream";
 import { finished } from "node:stream/promises";
+import { setImmediate } from "node:timers/promises";
 import type { CodecParameters, Packet } from "node-av";
 import type { Readable } from "node:stream";
 
@@ -123,6 +124,7 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
             once(input, "readable", { signal: cancel.signal }),
             finished(input, { cleanup: true, signal: cancel.signal })
           ]).finally(() => cancel.abort());
+          await setImmediate();
         }
       },
     },
