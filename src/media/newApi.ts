@@ -546,7 +546,11 @@ export async function playStream(
     (async () => {
       const logger = new Log("playStream:preview");
       logger.debug("Initializing decoder for stream preview");
-      const decoder = await createDecoder(video.codec, video.codecpar);
+      const decoder = await createDecoder(video.codec, {
+        codec_id: video.codecpar.codecId,
+        codec_type: video.codecpar.codecType,
+        format: video.codecpar.format,        
+      });
       if (!decoder) {
         logger.warn(
           "Failed to initialize decoder. Stream preview will be disabled",
