@@ -4,7 +4,7 @@ import { Log } from "debug-level";
 import { randomUUID } from "node:crypto";
 import { AVCodecID } from "./LibavCodecId.js";
 import { PassThrough } from "node:stream";
-import type { CodecParameters } from "node-av";
+import type { CodecParameters, Packet } from "node-av";
 import type { Readable } from "node:stream";
 
 type MediaStreamInfoCommon = {
@@ -188,7 +188,6 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
           vbsf.push(BitStreamFilterAPI.create("null", vStream));
           break;
       }
-      for (let i = 1; i < vbsf.length; ++i) vbsf[i - 1].pipeTo(vbsf[i]);
     } catch (e) {
       cleanup();
       throw new Error(`Failed to construct bitstream filterchain`, {
@@ -235,21 +234,31 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
   }
 
   const packetIterator = demuxer.packets();
+  const applyBitStreamFilters = async (input: Packet | null, filters: BitStreamFilterAPI[]) => {
+    let packets = [input]
+    for (const filter of filters) {
+      let newPackets: (Packet | null)[] = [];
+      for (const packet of packets) {
+        newPackets = [...newPackets, ...await filter.filterAll(packet)];
+        packet?.free();
+      }
+      if (!input)
+        newPackets.push(null);
+      packets = newPackets;
+    }
+    return packets;
+  }
   const readFrame = pDebounce.promise(async () => {
-    const filterIn = vbsf.at(0)!;
-    const filterOut = vbsf.at(-1)!;
     let resume = true;
     while (resume) {
       try {
         const { value: inPacket, done } = await packetIterator.next();
         if (done) {
           loggerFrameCommon.info("Reached end of stream. Stopping");
-          filterIn.sendToQueue(null);
-          while (true) {
-            const packet = await filterOut.receiveFromQueue();
-            if (!packet) break;
-            vPipe.write(packet.clone());
-            packet.free();
+          const packets = await applyBitStreamFilters(null, vbsf);
+          for (const packet of packets) {
+            if (packet)
+              vPipe.write(packet);
           }
           cleanup();
           return;
@@ -257,12 +266,10 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
           const streamIndex = inPacket.streamIndex;
           if (vInfo && vInfo.index === streamIndex) {
             loggerFrameVideo.trace("Received a video packet");
-            filterIn.sendToQueue(inPacket);
-            while (true) {
-              const packet = await filterOut.receiveFromQueue();
-              if (!packet) break;
-              resume &&= vPipe.write(packet.clone());
-              packet.free();
+            const packets = await applyBitStreamFilters(inPacket.clone(), vbsf);
+            for (const packet of packets) {
+              if (packet)
+                resume &&= vPipe.write(packet);
             }
           } else if (aInfo && aInfo.index === streamIndex) {
             const packet = inPacket.clone()!;
