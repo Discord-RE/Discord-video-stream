@@ -151,7 +151,6 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
       options: {
         fflags: "nobuffer",
       },
-      bufferSize: 65536,
       format,
     },
   );
