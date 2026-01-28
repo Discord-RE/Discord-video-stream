@@ -94,6 +94,12 @@ export type PrepareStreamOptions = {
   customHeaders: Record<string, string>;
 
   /**
+   * Custom input options to pass directly to ffmpeg
+   * These will be added to the command before other options
+   */
+  customInputOptions: string[];
+
+  /**
    * Custom ffmpeg flags/options to pass directly to ffmpeg
    * These will be added to the command after other options
    */
@@ -130,6 +136,7 @@ export function prepareStream(
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.3",
       Connection: "keep-alive",
     },
+    customInputOptions: [],
     customFfmpegFlags: [],
   } satisfies PrepareStreamOptions;
 
@@ -181,7 +188,8 @@ export function prepareStream(
         ...defaultOptions.customHeaders,
         ...opts.customHeaders,
       },
-
+      customInputOptions:
+        opts.customInputOptions ?? defaultOptions.customInputOptions,
       customFfmpegFlags:
         opts.customFfmpegFlags ?? defaultOptions.customFfmpegFlags,
     } satisfies PrepareStreamOptions;
@@ -205,6 +213,13 @@ export function prepareStream(
   const command = ffmpeg(input);
 
   // input options
+  if (
+    mergedOptions.customInputOptions &&
+    mergedOptions.customInputOptions.length > 0
+  ) {
+    command.inputOptions(mergedOptions.customInputOptions);
+  }
+
   const { hardwareAcceleratedDecoding, minimizeLatency, customHeaders } =
     mergedOptions;
   if (hardwareAcceleratedDecoding) command.inputOption("-hwaccel", "auto");
