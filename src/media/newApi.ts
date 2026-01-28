@@ -2,7 +2,7 @@ import ffmpeg from "fluent-ffmpeg";
 import pDebounce from "p-debounce";
 import sharp from "sharp";
 import Log from "debug-level";
-import { Packet, AV_PKT_FLAG_KEY } from "node-av";
+import { type Packet, AV_PKT_FLAG_KEY } from "node-av";
 import { PassThrough, type Readable } from "node:stream";
 import { demux } from "./LibavDemuxer.js";
 import { VideoStream } from "./VideoStream.js";
@@ -546,7 +546,7 @@ export async function playStream(
     (async () => {
       const logger = new Log("playStream:preview");
       logger.debug("Initializing decoder for stream preview");
-      const decoder = await createDecoder(video.avStream)
+      const decoder = await createDecoder(video.avStream);
       if (!decoder) {
         logger.warn(
           "Failed to initialize decoder. Stream preview will be disabled",
@@ -558,17 +558,14 @@ export async function playStream(
         decoder.free();
       });
       const updatePreview = pDebounce.promise(async (packet: Packet) => {
-        if (
-          !(packet.flags !== undefined && packet.flags & AV_PKT_FLAG_KEY)
-        )
+        if (!(packet.flags !== undefined && packet.flags & AV_PKT_FLAG_KEY))
           return;
         const decodeStart = performance.now();
         const frames = await decoder.decode(packet).catch((e) => {
           logger.error(e, "Failed to decode the frame");
           return [];
         });
-        if (!frames.length)
-          return;
+        if (!frames.length) return;
 
         const decodeEnd = performance.now();
         logger.debug(`Decoding a frame took ${decodeEnd - decodeStart}ms`);
@@ -586,7 +583,11 @@ export async function playStream(
           .toBuffer()
           .then((image) => streamer.setStreamPreview(image))
           .catch(() => {})
-          .finally(() => { frames.forEach(frame => { frame.free() })});
+          .finally(() => {
+            frames.forEach((frame) => {
+              frame.free();
+            });
+          });
       });
       video.stream.on("data", updatePreview);
       cleanupFuncs.push(() => video.stream.off("data", updatePreview));

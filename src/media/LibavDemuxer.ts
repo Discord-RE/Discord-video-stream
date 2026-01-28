@@ -1,5 +1,10 @@
 import pDebounce from "p-debounce";
-import { BitStreamFilterAPI, Demuxer, avGetCodecName, type Stream } from "node-av";
+import {
+  BitStreamFilterAPI,
+  Demuxer,
+  avGetCodecName,
+  type Stream,
+} from "node-av";
 import { Log } from "debug-level";
 import { randomUUID } from "node:crypto";
 import { AVCodecID } from "./LibavCodecId.js";
@@ -105,7 +110,8 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
   const demuxer = await Demuxer.open(
     {
       async read(size) {
-        const totalSize = () => chunks.reduce((sum, buf) => sum + buf.length, 0);
+        const totalSize = () =>
+          chunks.reduce((sum, buf) => sum + buf.length, 0);
         while (true) {
           if (totalSize() >= size) {
             const concat = Buffer.concat(chunks);
@@ -115,28 +121,28 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
           const cancel = new AbortController();
           await Promise.race([
             once(input, "readable", { signal: cancel.signal }),
-            finished(input, { cleanup: true, signal: cancel.signal })
+            finished(input, { cleanup: true, signal: cancel.signal }),
           ]).finally(() => cancel.abort());
           let hasData = false;
           while (true) {
             const buf: Buffer | null = input.read();
-            if (!buf)
-              break;
+            if (!buf) break;
             loggerInput.trace(
               `Received ${buf.length} bytes of data for input ${filename}`,
             );
             chunks.push(buf);
             hasData = true;
           }
-          if (hasData)
-            continue;
+          if (hasData) continue;
           if (input.errored) {
-            loggerInput.trace({ error: input.errored }, `An error occurred on input ${filename}`);
+            loggerInput.trace(
+              { error: input.errored },
+              `An error occurred on input ${filename}`,
+            );
             return null;
           }
           if (input.readableEnded) {
-            if (chunks.length)
-            {
+            if (chunks.length) {
               const concat = Buffer.concat(chunks);
               chunks = [];
               return concat;
@@ -265,20 +271,22 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
   }
 
   const packetIterator = demuxer.packets();
-  const applyBitStreamFilters = async (input: Packet | null, filters: BitStreamFilterAPI[]) => {
-    let packets = [input]
+  const applyBitStreamFilters = async (
+    input: Packet | null,
+    filters: BitStreamFilterAPI[],
+  ) => {
+    let packets = [input];
     for (const filter of filters) {
       let newPackets: (Packet | null)[] = [];
       for (const packet of packets) {
-        newPackets = [...newPackets, ...await filter.filterAll(packet)];
+        newPackets = [...newPackets, ...(await filter.filterAll(packet))];
         packet?.free();
       }
-      if (!input)
-        newPackets.push(null);
+      if (!input) newPackets.push(null);
       packets = newPackets;
     }
     return packets;
-  }
+  };
   const readFrame = pDebounce.promise(async () => {
     let resume = true;
     while (resume) {
@@ -288,8 +296,7 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
           loggerFrameCommon.info("Reached end of stream. Stopping");
           const packets = await applyBitStreamFilters(null, vbsf);
           for (const packet of packets) {
-            if (packet)
-              vPipe.write(packet);
+            if (packet) vPipe.write(packet);
           }
           cleanup();
           return;
@@ -299,8 +306,7 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
             loggerFrameVideo.trace("Received a video packet");
             const packets = await applyBitStreamFilters(inPacket.clone(), vbsf);
             for (const packet of packets) {
-              if (packet)
-                resume &&= vPipe.write(packet);
+              if (packet) resume &&= vPipe.write(packet);
             }
           } else if (aInfo && aInfo.index === streamIndex) {
             const packet = inPacket.clone()!;

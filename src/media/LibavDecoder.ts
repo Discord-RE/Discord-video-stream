@@ -1,4 +1,10 @@
-import { Decoder, FilterAPI, Frame, Packet, Stream } from "node-av";
+import {
+  Decoder,
+  FilterAPI,
+  type Frame,
+  type Packet,
+  type Stream,
+} from "node-av";
 
 export async function createDecoder(stream: Stream) {
   const decoder = await Decoder.create(stream);
@@ -24,9 +30,8 @@ export async function createDecoder(stream: Stream) {
       return serialize(async () => {
         const frames = await decoder.decodeAll(packets);
         let filtered: Frame[] = [];
-        for (const frame of frames)
-        {
-          filtered = [...filtered, ...await filter.processAll(frame)];
+        for (const frame of frames) {
+          filtered = [...filtered, ...(await filter.processAll(frame))];
         }
         return filtered;
       });
