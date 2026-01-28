@@ -98,7 +98,7 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
 
   const filename = randomUUID();
   const inputIterator = input.iterator();
-  using demuxer = await Demuxer.open(
+  const demuxer = await Demuxer.open(
     {
       async read() {
         try {
@@ -128,6 +128,7 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
 
   const cleanup = () => {
     input.destroy();
+    demuxer.close();
     vPipe.off("drain", readFrame);
     aPipe.off("drain", readFrame);
     vPipe.end();
