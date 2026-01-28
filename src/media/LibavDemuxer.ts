@@ -118,7 +118,7 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
           ]).finally(() => cancel.abort());
           let hasData = false;
           while (true) {
-            const buf: Buffer | null = await input.read();
+            const buf: Buffer | null = input.read();
             if (!buf)
               break;
             loggerInput.trace(
