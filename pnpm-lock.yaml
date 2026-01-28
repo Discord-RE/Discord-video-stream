@@ -8,9 +8,6 @@ importers:
 
   .:
     dependencies:
-      '@lng2004/libav.js-variant-webcodecs-avf-with-decoders':
-        specifier: 6.8.8-demuxer-options
-        version: 6.8.8-demuxer-options
       '@lng2004/node-datachannel':
         specifier: 0.31.0-20251228.2
         version: 0.31.0-20251228.2
@@ -306,9 +303,6 @@ packages:
 
   '@leichtgewicht/ip-codec@2.0.5':
     resolution: {integrity: sha512-Vo+PSpZG2/fmgmiNzYK9qWRh8h/CHrwD0mo1h1DzL4yzHNSfWYujGTYsWGreD000gcgmZ7K4Ys6Tx9TxtsKdDw==}
-
-  '@lng2004/libav.js-variant-webcodecs-avf-with-decoders@6.8.8-demuxer-options':
-    resolution: {integrity: sha512-5eKhe8GLvdcU1Y7oWQ+ZQOpZeAYosv2T9zDa7pF+K5IyB2WqG8X1jKXtD4/nkfqdjoiXDD4Fp++USS0pCoByRg==}
 
   '@lng2004/node-datachannel@0.31.0-20251228.2':
     resolution: {integrity: sha512-RwC8ux5XyLTJzcbkS+u2jQfHOH99nIrRX3wNWqxaQvsk6urji3dlVUvPYuaovxG4vBQhLdZ2TUv2DR1OecBZhg==}
@@ -1512,8 +1506,6 @@ snapshots:
       type-detect: 4.1.0
 
   '@leichtgewicht/ip-codec@2.0.5': {}
-
-  '@lng2004/libav.js-variant-webcodecs-avf-with-decoders@6.8.8-demuxer-options': {}
 
   '@lng2004/node-datachannel@0.31.0-20251228.2':
     dependencies:
