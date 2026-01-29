@@ -93,13 +93,13 @@ export class BaseMediaStream extends Writable {
     callback: (error?: Error | null) => void,
   ) {
     const { data, pts, duration, timeBase } = frame;
-    const frametime = Number(duration) / timeBase.den * timeBase.num * 1000;
+    const frametime = (Number(duration) / timeBase.den) * timeBase.num * 1000;
 
     const start_sendFrame = performance.now();
     await this._sendFrame(Buffer.from(data!), frametime);
     const end_sendFrame = performance.now();
 
-    this._pts = Number(pts) / timeBase.den * timeBase.num * 1000;
+    this._pts = (Number(pts) / timeBase.den) * timeBase.num * 1000;
     this.emit("pts", this._pts);
 
     const sendTime = end_sendFrame - start_sendFrame;
