@@ -93,10 +93,16 @@ export class BaseMediaStream extends Writable {
     callback: (error?: Error | null) => void,
   ) {
     const { data, pts, duration, timeBase } = frame;
+    if (!data) {
+      frame.free();
+      callback();
+      return;
+    }
+
     const frametime = (Number(duration) / timeBase.den) * timeBase.num * 1000;
 
     const start_sendFrame = performance.now();
-    await this._sendFrame(Buffer.from(data!), frametime);
+    await this._sendFrame(Buffer.from(data), frametime);
     const end_sendFrame = performance.now();
 
     this._pts = (Number(pts) / timeBase.den) * timeBase.num * 1000;
@@ -108,7 +114,7 @@ export class BaseMediaStream extends Writable {
       {
         stats: {
           pts: this._pts,
-          frame_size: data!.length,
+          frame_size: data.length,
           duration: sendTime,
           frametime,
         },
@@ -118,7 +124,7 @@ export class BaseMediaStream extends Writable {
     if (ratio > 1) {
       this._loggerSend.warn(
         {
-          frame_size: data!.length,
+          frame_size: data.length,
           duration: sendTime,
           frametime,
         },
