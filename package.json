@@ -13,7 +13,7 @@
         "access": "public"
     },
     "dependencies": {
-        "@lng2004/node-datachannel": "0.31.0-20251228.2",
+        "@lng2004/node-datachannel": "0.32.0-20260202",
         "@snazzah/davey": "^0.1.8",
         "debug-level": "^4.1.1",
         "fluent-ffmpeg": "^2.1.3",
@@ -70,7 +70,14 @@
     "pnpm": {
         "onlyBuiltDependencies": [
             "@lng2004/node-datachannel",
+            "@seydx/node-av-win32-x64-msvc",
             "node-datachannel"
+        ],
+        "ignoredBuiltDependencies": [
+            "@seydx/node-av-win32-x64-mingw",
+            "node-av",
+            "sharp",
+            "zeromq"
         ]
     }
 }
