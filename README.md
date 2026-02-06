@@ -75,7 +75,7 @@ npm install discord.js-selfbot-v13@latest
 ```
 
 > [!IMPORTANT]
-> If you're using `pnpm`, you need to run `pnpm approve-builds` and approve `node-datachannel`, or else native dependencies will be missing and you'll get import errors
+> This library makes use of native dependencies (`node-av` and `node-datachannel`). If you use package managers that don't run install scripts by default (`pnpm`, `bun`, etc.), you'll need to allow running install scripts for `node-av` and `node-datachannel` for proper operation.
 
 Create a new Streamer, and pass it a selfbot Client
 
