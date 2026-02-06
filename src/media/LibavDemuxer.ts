@@ -106,58 +106,13 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
   const loggerFrameAudio = new Log("demux:frame:audio");
 
   const filename = randomUUID();
-  let chunks: Buffer[] = [];
-  const demuxer = await Demuxer.open(
-    {
-      async read(size) {
-        const totalSize = () =>
-          chunks.reduce((sum, buf) => sum + buf.length, 0);
-        while (true) {
-          if (totalSize() >= size) {
-            const concat = Buffer.concat(chunks);
-            chunks = [concat.subarray(size)];
-            return concat.subarray(0, size);
-          }
-          const cancel = new AbortController();
-          await Promise.race([
-            once(input, "readable", { signal: cancel.signal }),
-            finished(input, { cleanup: true, signal: cancel.signal }),
-          ]).finally(() => cancel.abort());
-          let hasData = false;
-          while (true) {
-            const buf: Buffer | null = input.read();
-            if (!buf) break;
-            loggerInput.trace(
-              `Received ${buf.length} bytes of data for input ${filename}`,
-            );
-            chunks.push(buf);
-            hasData = true;
-          }
-          if (hasData) continue;
-          if (input.errored) {
-            loggerInput.trace(
-              { error: input.errored },
-              `An error occurred on input ${filename}`,
-            );
-            return null;
-          }
-          if (input.readableEnded) {
-            if (chunks.length) {
-              const concat = Buffer.concat(chunks);
-              chunks = [];
-              return concat;
-            }
-            loggerInput.trace(`Reached the end of input ${filename}`);
-            return null;
-          }
-        }
-      },
-    },
+  const demuxer = await Demuxer.open(input,
     {
       options: {
         fflags: "nobuffer",
       },
       format,
+      bufferSize: 8192
     },
   );
 
