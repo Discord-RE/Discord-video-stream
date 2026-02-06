@@ -99,22 +99,19 @@ type DemuxerOptions = {
 };
 
 export async function demux(input: Readable, { format }: DemuxerOptions) {
-  const loggerInput = new Log("demux:input");
   const loggerFormat = new Log("demux:format");
   const loggerFrameCommon = new Log("demux:frame:common");
   const loggerFrameVideo = new Log("demux:frame:video");
   const loggerFrameAudio = new Log("demux:frame:audio");
 
   const filename = randomUUID();
-  const demuxer = await Demuxer.open(input,
-    {
-      options: {
-        fflags: "nobuffer",
-      },
-      format,
-      bufferSize: 8192
+  const demuxer = await Demuxer.open(input, {
+    options: {
+      fflags: "nobuffer",
     },
-  );
+    format,
+    bufferSize: 8192,
+  });
 
   const cleanup = () => {
     input.destroy();
