@@ -180,11 +180,11 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
   let aInfo: AudioStreamInfo | undefined;
   const vPipe = new PassThrough({
     objectMode: true,
-    writableHighWaterMark: 8,
+    writableHighWaterMark: 128,
   });
   const aPipe = new PassThrough({
     objectMode: true,
-    writableHighWaterMark: 8,
+    writableHighWaterMark: 128,
   });
 
   const vbsf: BitStreamFilterAPI[] = [];
