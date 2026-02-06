@@ -2,6 +2,7 @@ import ffmpeg from "fluent-ffmpeg";
 import pDebounce from "p-debounce";
 import sharp from "sharp";
 import Log from "debug-level";
+import { type Packet, AV_PKT_FLAG_KEY } from "node-av";
 import { PassThrough, type Readable } from "node:stream";
 import { demux } from "./LibavDemuxer.js";
 import { VideoStream } from "./VideoStream.js";
@@ -10,9 +11,8 @@ import { isBun, isDeno, isFiniteNonZero } from "../utils.js";
 import { AVCodecID } from "./LibavCodecId.js";
 import { createDecoder } from "./LibavDecoder.js";
 import { Encoders } from "./encoders/index.js";
-import type { Request } from "zeromq";
 
-import LibAV from "@lng2004/libav.js-variant-webcodecs-avf-with-decoders";
+import type { Request } from "zeromq";
 import type { SupportedVideoCodec } from "../utils.js";
 import type { Streamer } from "../client/index.js";
 import type { EncoderSettingsGetter } from "./encoders/index.js";
@@ -561,7 +561,7 @@ export async function playStream(
     (async () => {
       const logger = new Log("playStream:preview");
       logger.debug("Initializing decoder for stream preview");
-      const decoder = await createDecoder(video.codec, video.codecpar);
+      const decoder = await createDecoder(video.avStream);
       if (!decoder) {
         logger.warn(
           "Failed to initialize decoder. Stream preview will be disabled",
@@ -572,21 +572,21 @@ export async function playStream(
         logger.debug("Freeing decoder");
         decoder.free();
       });
-      const updatePreview = pDebounce.promise(async (packet: LibAV.Packet) => {
-        if (
-          !(packet.flags !== undefined && packet.flags & LibAV.AV_PKT_FLAG_KEY)
-        )
+      const updatePreview = pDebounce.promise(async (packet: Packet) => {
+        if (!(packet.flags !== undefined && packet.flags & AV_PKT_FLAG_KEY))
           return;
         const decodeStart = performance.now();
-        const [frame] = await decoder.decode([packet]).catch((e) => {
+        const frames = await decoder.decode(packet).catch((e) => {
           logger.error(e, "Failed to decode the frame");
           return [];
         });
-        if (!frame) return;
+        if (!frames.length) return;
+
         const decodeEnd = performance.now();
         logger.debug(`Decoding a frame took ${decodeEnd - decodeStart}ms`);
+        const frame = frames[0];
 
-        return sharp(frame.data, {
+        return sharp(frame.toBuffer(), {
           raw: {
             width: frame.width ?? 0,
             height: frame.height ?? 0,
@@ -597,7 +597,12 @@ export async function playStream(
           .jpeg()
           .toBuffer()
           .then((image) => streamer.setStreamPreview(image))
-          .catch(() => {});
+          .catch(() => {})
+          .finally(() => {
+            frames.forEach((frame) => {
+              frame.free();
+            });
+          });
       });
       video.stream.on("data", updatePreview);
       cleanupFuncs.push(() => video.stream.off("data", updatePreview));
