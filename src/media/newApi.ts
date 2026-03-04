@@ -104,6 +104,20 @@ export type PrepareStreamOptions = {
    * These will be added to the command after other options
    */
   customFfmpegFlags: string[];
+
+  /**
+   * FFmpeg log level
+   */
+  logLevel:
+    | "quiet"
+    | "panic"
+    | "fatal"
+    | "error"
+    | "warning"
+    | "info"
+    | "verbose"
+    | "debug"
+    | "trace";
 };
 
 export type Controller = {
@@ -117,6 +131,9 @@ export function prepareStream(
   cancelSignal?: AbortSignal,
 ) {
   cancelSignal?.throwIfAborted();
+
+  const logger = new Log("prepareStream");
+  const loggerFFmpeg = new Log("prepareStream:ffmpeg");
   const defaultOptions = {
     noTranscoding: false,
     // negative values = resize by aspect ratio, see https://trac.ffmpeg.org/wiki/Scaling
@@ -138,6 +155,7 @@ export function prepareStream(
     },
     customInputOptions: [],
     customFfmpegFlags: [],
+    logLevel: "verbose",
   } satisfies PrepareStreamOptions;
 
   function mergeOptions(opts: Partial<PrepareStreamOptions>) {
@@ -188,10 +206,14 @@ export function prepareStream(
         ...defaultOptions.customHeaders,
         ...opts.customHeaders,
       },
+
       customInputOptions:
         opts.customInputOptions ?? defaultOptions.customInputOptions,
+
       customFfmpegFlags:
         opts.customFfmpegFlags ?? defaultOptions.customFfmpegFlags,
+
+      logLevel: opts.logLevel ?? defaultOptions.logLevel,
     } satisfies PrepareStreamOptions;
   }
 
@@ -211,8 +233,11 @@ export function prepareStream(
 
   // command creation
   const command = new FFmpegCommand();
+  command.on("stderr", (line) => {
+    loggerFFmpeg.debug(line);
+  });
   command.input(input);
-  command.inputOptions("-y", "-loglevel", "info", "-nostats");
+  command.inputOptions("-y", "-loglevel", mergedOptions.logLevel, "-nostats");
 
   // input options
   if (
@@ -356,6 +381,9 @@ export function prepareStream(
     });
   }
 
+  command.once("start", (cmdline) => {
+    logger.debug(`Starting ffmpeg: ${cmdline}`);
+  });
   const promise = command.run(cancelSignal);
 
   return {
