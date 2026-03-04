@@ -231,7 +231,7 @@ export function prepareStream(
       "-fflags nobuffer",
       "-flags lowdelay",
       "-flush_packets 1",
-      "-max_delay 100000"
+      "-max_delay 100000",
     );
   }
 
