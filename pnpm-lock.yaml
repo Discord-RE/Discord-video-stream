@@ -18,8 +18,8 @@ importers:
         specifier: ^4.1.1
         version: 4.1.1
       fluent-ffmpeg-simplified:
-        specifier: ^0.0.3
-        version: 0.0.3
+        specifier: ^0.1.0
+        version: 0.1.0
       node-av:
         specifier: ^5.2.2
         version: 5.2.2
@@ -803,8 +803,8 @@ packages:
   flatstr@1.0.12:
     resolution: {integrity: sha512-4zPxDyhCyiN2wIAtSLI6gc82/EjqZc1onI4Mz/l0pWrAlsSfYH/2ZIcU+e3oA2wDwbzIWNKwa23F8rh6+DRWkw==}
 
-  fluent-ffmpeg-simplified@0.0.3:
-    resolution: {integrity: sha512-q2PF9AxqRcDYN/eyPBL7/XWQeddEWH7rSwrlXvKey/bfHOy/LtTPlyzbYvDBdoJUcOrlYZA+vCQAwBnMg0QpCg==}
+  fluent-ffmpeg-simplified@0.1.0:
+    resolution: {integrity: sha512-u3McLUh6H6/hhXYxfZcSGwCJAAlN8wsCCPZjVpaK9HIIvmjOB3G584H3PAWZb/ZQTHVKUrzhjNEYMXZXZjOR+g==}
 
   fs-constants@1.0.0:
     resolution: {integrity: sha512-y6OAwoSIf7FyjMIv94u+b5rdheZEjzR63GTyZJm5qh4Bi+2YgwLCcI/fPFZkL5PSixOt6ZNKm+w+Hfp/Bciwow==}
@@ -2108,7 +2108,7 @@ snapshots:
 
   flatstr@1.0.12: {}
 
-  fluent-ffmpeg-simplified@0.0.3:
+  fluent-ffmpeg-simplified@0.1.0:
     dependencies:
       execa: 9.6.1
       string-argv: 0.3.2
