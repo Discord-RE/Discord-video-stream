@@ -13,6 +13,6 @@ export class AudioStream extends BaseMediaStream {
     frame: Buffer,
     frametime: number,
   ): Promise<void> {
-    await this._conn.sendAudioFrame(frame, frametime);
+    this._conn.sendAudioFrame(frame, frametime);
   }
 }

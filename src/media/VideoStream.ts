@@ -12,6 +12,6 @@ export class VideoStream extends BaseMediaStream {
     frame: Buffer,
     frametime: number,
   ): Promise<void> {
-    await this._conn.sendVideoFrame(frame, frametime);
+    this._conn.sendVideoFrame(frame, frametime);
   }
 }

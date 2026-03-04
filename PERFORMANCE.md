@@ -1,5 +1,9 @@
 # Performance related tweaks
 
+## `ultrafast` shouldn't be used for x264/5
+
+In our testing, the `ultrafast` preset produces a lot of bitrate spikes, causing the stream to stutter. `superfast` and below seems to keep it under control pretty well. Do not use `ultrafast`. Previous versions of the library has `ultrafast` as the default, which has been changed after the testing.
+
 ## Transport encryption methods
 
 > [!NOTE]

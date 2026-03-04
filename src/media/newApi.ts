@@ -2,6 +2,7 @@ import pDebounce from "p-debounce";
 import sharp from "sharp";
 import Log from "debug-level";
 import { FFmpegCommand } from "fluent-ffmpeg-simplified";
+import { type Packet, AV_PKT_FLAG_KEY } from "node-av";
 import { PassThrough, type Readable } from "node:stream";
 import { demux } from "./LibavDemuxer.js";
 import { VideoStream } from "./VideoStream.js";
@@ -10,9 +11,8 @@ import { isBun, isDeno, isFiniteNonZero } from "../utils.js";
 import { AVCodecID } from "./LibavCodecId.js";
 import { createDecoder } from "./LibavDecoder.js";
 import { Encoders } from "./encoders/index.js";
-import type { Request } from "zeromq";
 
-import LibAV from "@lng2004/libav.js-variant-webcodecs-avf-with-decoders";
+import type { Request } from "zeromq";
 import type { SupportedVideoCodec } from "../utils.js";
 import type { Streamer } from "../client/index.js";
 import type { EncoderSettingsGetter } from "./encoders/index.js";
@@ -94,6 +94,12 @@ export type PrepareStreamOptions = {
   customHeaders: Record<string, string>;
 
   /**
+   * Custom input options to pass directly to ffmpeg
+   * These will be added to the command before other options
+   */
+  customInputOptions: string[];
+
+  /**
    * Custom ffmpeg flags/options to pass directly to ffmpeg
    * These will be added to the command after other options
    */
@@ -130,6 +136,7 @@ export function prepareStream(
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.3",
       Connection: "keep-alive",
     },
+    customInputOptions: [],
     customFfmpegFlags: [],
   } satisfies PrepareStreamOptions;
 
@@ -181,7 +188,8 @@ export function prepareStream(
         ...defaultOptions.customHeaders,
         ...opts.customHeaders,
       },
-
+      customInputOptions:
+        opts.customInputOptions ?? defaultOptions.customInputOptions,
       customFfmpegFlags:
         opts.customFfmpegFlags ?? defaultOptions.customFfmpegFlags,
     } satisfies PrepareStreamOptions;
@@ -207,6 +215,13 @@ export function prepareStream(
   command.inputOptions("-y", "-loglevel", "info", "-nostats");
 
   // input options
+  if (
+    mergedOptions.customInputOptions &&
+    mergedOptions.customInputOptions.length > 0
+  ) {
+    command.inputOptions(mergedOptions.customInputOptions);
+  }
+
   const { hardwareAcceleratedDecoding, minimizeLatency, customHeaders } =
     mergedOptions;
   if (hardwareAcceleratedDecoding) command.inputOptions("-hwaccel", "auto");
@@ -269,6 +284,8 @@ export function prepareStream(
       `${bitrateVideo}k`,
       "-maxrate:v",
       `${bitrateVideoMax}k`,
+      "-bufsize:v",
+      `${Math.round(bitrateVideo / 2)}k`,
       "-bf",
       "0",
       "-pix_fmt",
@@ -282,14 +299,16 @@ export function prepareStream(
       throw new Error(`Encoder settings not specified for ${videoCodec}`);
     command
       .videoCodec(encoderSettings.name)
-      .outputOptions(encoderSettings.options);
+      .videoFilters(encoderSettings.outFilters ?? [])
+      .outputOptions(encoderSettings.options)
+      .outputOptions(encoderSettings.globalOptions ?? []);
   }
 
   // audio setup
   const { includeAudio, bitrateAudio } = mergedOptions;
   if (includeAudio)
     command
-      .outputOptions("-map 0:a?")
+      .outputOptions("-map 0:a:0?")
       .audioChannels(2)
       /*
        * I don't have much surround sound material to test this with,
@@ -530,7 +549,7 @@ export async function playStream(
     (async () => {
       const logger = new Log("playStream:preview");
       logger.debug("Initializing decoder for stream preview");
-      const decoder = await createDecoder(video.codec, video.codecpar);
+      const decoder = await createDecoder(video.avStream);
       if (!decoder) {
         logger.warn(
           "Failed to initialize decoder. Stream preview will be disabled",
@@ -541,21 +560,21 @@ export async function playStream(
         logger.debug("Freeing decoder");
         decoder.free();
       });
-      const updatePreview = pDebounce.promise(async (packet: LibAV.Packet) => {
-        if (
-          !(packet.flags !== undefined && packet.flags & LibAV.AV_PKT_FLAG_KEY)
-        )
+      const updatePreview = pDebounce.promise(async (packet: Packet) => {
+        if (!(packet.flags !== undefined && packet.flags & AV_PKT_FLAG_KEY))
           return;
         const decodeStart = performance.now();
-        const [frame] = await decoder.decode([packet]).catch((e) => {
+        const frames = await decoder.decode(packet).catch((e) => {
           logger.error(e, "Failed to decode the frame");
           return [];
         });
-        if (!frame) return;
+        if (!frames.length) return;
+
         const decodeEnd = performance.now();
         logger.debug(`Decoding a frame took ${decodeEnd - decodeStart}ms`);
+        const frame = frames[0];
 
-        return sharp(frame.data, {
+        return sharp(frame.toBuffer(), {
           raw: {
             width: frame.width ?? 0,
             height: frame.height ?? 0,
@@ -566,7 +585,12 @@ export async function playStream(
           .jpeg()
           .toBuffer()
           .then((image) => streamer.setStreamPreview(image))
-          .catch(() => {});
+          .catch(() => {})
+          .finally(() => {
+            frames.forEach((frame) => {
+              frame.free();
+            });
+          });
       });
       video.stream.on("data", updatePreview);
       cleanupFuncs.push(() => video.stream.off("data", updatePreview));

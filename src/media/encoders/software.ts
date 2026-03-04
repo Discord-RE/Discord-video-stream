@@ -44,9 +44,9 @@ export const software = ({
   x264,
   x265,
 }: DeepPartial<SoftwareEncoderSettings> = {}) => {
-  const { preset: x264Preset = "ultrafast", tune: x264Tune = "film" } =
+  const { preset: x264Preset = "superfast", tune: x264Tune = "film" } =
     x264 ?? {};
-  const { preset: x265Preset = "ultrafast", tune: x265Tune } = x265 ?? {};
+  const { preset: x265Preset = "superfast", tune: x265Tune } = x265 ?? {};
   return (() => ({
     H264: {
       name: "libx264",

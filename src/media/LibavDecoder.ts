@@ -1,28 +1,13 @@
-import LibAV, {
-  AV_PIX_FMT_RGBA,
-  AVMEDIA_TYPE_VIDEO,
-} from "@lng2004/libav.js-variant-webcodecs-avf-with-decoders";
-import { isDeno, isBun } from "../utils.js";
+import {
+  Decoder,
+  FilterAPI,
+  type Frame,
+  type Packet,
+  type Stream,
+} from "node-av";
 
-let libavInstance: Promise<LibAV.LibAV>;
-
-export async function createDecoder(
-  id: number,
-  codecpar: LibAV.CodecParameters,
-) {
-  if (isDeno() || isBun()) {
-    if (process.env.LIBAVDECODER_FORCE_ENABLED) {
-      console.error("Video decoder force enabled. Here be dragons!");
-    } else {
-      console.error(
-        "The decoder currently doesn't work with Deno and Bun, due to " +
-          "various issues with Emscripten's pthread support leading to " +
-          "crashes. The decoder will not be initialized",
-      );
-      return null;
-    }
-  }
-  libavInstance ??= LibAV.LibAV({ yesthreads: true });
+export async function createDecoder(stream: Stream) {
+  const decoder = await Decoder.create(stream);
   let freed = false;
   let serializer: Promise<unknown> | null = null;
   const serialize = <T>(f: () => Promise<T>) => {
@@ -37,52 +22,25 @@ export async function createDecoder(
     });
     return p;
   };
-  const libav = await libavInstance;
-  const [, c, pkt, frame] = await libav.ff_init_decoder(id, {
-    codecpar,
-  });
-  const { width, height, format } = codecpar;
-  const [graph, src_ctx, sink_ctx] = await libav.ff_init_filter_graph(
-    "format=pix_fmts=rgba",
-    {
-      type: AVMEDIA_TYPE_VIDEO,
-      width: width ?? 0,
-      height: height ?? 0,
-      pix_fmt: format ?? 0,
-    },
-    {
-      type: AVMEDIA_TYPE_VIDEO,
-      width: width ?? 0,
-      height: height ?? 0,
-      pix_fmt: AV_PIX_FMT_RGBA,
-    },
-  );
+  const filter = FilterAPI.create("format=pix_fmts=rgba");
   return {
-    decode: async (packets: (LibAV.Packet | number)[]) => {
+    decode: async (packets: Packet) => {
       if (freed) return [];
-      return serialize(() =>
-        libav.ff_decode_filter_multi(
-          c,
-          src_ctx,
-          sink_ctx,
-          pkt,
-          frame,
-          packets,
-          { ignoreErrors: true },
-        ),
-      );
+
+      return serialize(async () => {
+        const frames = await decoder.decodeAll(packets);
+        let filtered: Frame[] = [];
+        for (const frame of frames) {
+          filtered = [...filtered, ...(await filter.processAll(frame))];
+        }
+        return filtered;
+      });
     },
     free: () => {
       freed = true;
-      serialize(() =>
-        libav.ff_decode_filter_multi(c, src_ctx, sink_ctx, pkt, frame, [], {
-          fin: true,
-          ignoreErrors: true,
-        }),
-      );
       return serialize(async () => {
-        libav.ff_free_decoder(c, pkt, frame);
-        libav.avfilter_graph_free_js(graph);
+        decoder.close();
+        filter.close();
       });
     },
   };

@@ -13,11 +13,11 @@
         "access": "public"
     },
     "dependencies": {
-        "@lng2004/libav.js-variant-webcodecs-avf-with-decoders": "6.8.8-simd-lto",
+        "@lng2004/node-datachannel": "0.32.0-20260202",
         "@snazzah/davey": "^0.1.8",
         "debug-level": "^4.1.1",
         "fluent-ffmpeg-simplified": "^0.0.3",
-        "node-datachannel": "^0.31.0",
+        "node-av": "v5.2.2-beta.2",
         "p-debounce": "^5.1.0",
         "sharp": "^0.34.5",
         "zeromq": "^6.5.0"
@@ -28,7 +28,6 @@
         "@types/node": "^25.0.1",
         "discord.js-selfbot-v13": "^3.7.1",
         "pkg-pr-new": "^0.0.62",
-        "typed-emitter": "^2.1.0",
         "typescript": "^5.9.3"
     },
     "peerDependencies": {
@@ -40,7 +39,9 @@
     "scripts": {
         "build": "tsc",
         "lint": "biome lint --error-on-warnings .",
-        "lint:fix": "biome lint --write ."
+        "lint:fix": "biome lint --write .",
+        "check": "biome check .",
+        "check:fix": "biome check --write ."
     },
     "keywords": [
         "discord",
@@ -68,6 +69,7 @@
     "homepage": "https://github.com/dank074/Discord-video-stream#readme",
     "pnpm": {
         "onlyBuiltDependencies": [
+            "@lng2004/node-datachannel",
             "node-datachannel"
         ]
     }
