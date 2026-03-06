@@ -1,5 +1,7 @@
 # Discord self-bot video
 
+[![pkg.pr.new](/badge/Discord-RE/Discord-video-stream)](/~/Discord-RE/Discord-video-stream)
+
 Fork: [Discord-video-experiment](https://github.com/mrjvs/Discord-video-experiment)
 
 > [!CAUTION]
