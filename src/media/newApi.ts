@@ -1,7 +1,7 @@
-import ffmpeg from "fluent-ffmpeg";
 import pDebounce from "p-debounce";
 import sharp from "sharp";
 import Log from "debug-level";
+import { FFmpegCommand } from "fluent-ffmpeg-simplified";
 import { type Packet, AV_PKT_FLAG_KEY } from "node-av";
 import { PassThrough, type Readable } from "node:stream";
 import { demux } from "./LibavDemuxer.js";
@@ -104,6 +104,20 @@ export type PrepareStreamOptions = {
    * These will be added to the command after other options
    */
   customFfmpegFlags: string[];
+
+  /**
+   * FFmpeg log level
+   */
+  logLevel:
+    | "quiet"
+    | "panic"
+    | "fatal"
+    | "error"
+    | "warning"
+    | "info"
+    | "verbose"
+    | "debug"
+    | "trace";
 };
 
 export type Controller = {
@@ -117,6 +131,9 @@ export function prepareStream(
   cancelSignal?: AbortSignal,
 ) {
   cancelSignal?.throwIfAborted();
+
+  const logger = new Log("prepareStream");
+  const loggerFFmpeg = new Log("prepareStream:ffmpeg");
   const defaultOptions = {
     noTranscoding: false,
     // negative values = resize by aspect ratio, see https://trac.ffmpeg.org/wiki/Scaling
@@ -138,6 +155,7 @@ export function prepareStream(
     },
     customInputOptions: [],
     customFfmpegFlags: [],
+    logLevel: "verbose",
   } satisfies PrepareStreamOptions;
 
   function mergeOptions(opts: Partial<PrepareStreamOptions>) {
@@ -188,10 +206,14 @@ export function prepareStream(
         ...defaultOptions.customHeaders,
         ...opts.customHeaders,
       },
+
       customInputOptions:
         opts.customInputOptions ?? defaultOptions.customInputOptions,
+
       customFfmpegFlags:
         opts.customFfmpegFlags ?? defaultOptions.customFfmpegFlags,
+
+      logLevel: opts.logLevel ?? defaultOptions.logLevel,
     } satisfies PrepareStreamOptions;
   }
 
@@ -210,7 +232,12 @@ export function prepareStream(
   const output = new PassThrough();
 
   // command creation
-  const command = ffmpeg(input);
+  const command = new FFmpegCommand();
+  command.on("stderr", (line) => {
+    loggerFFmpeg.debug(line);
+  });
+  command.input(input);
+  command.inputOptions("-y", "-loglevel", mergedOptions.logLevel, "-nostats");
 
   // input options
   if (
@@ -222,14 +249,19 @@ export function prepareStream(
 
   const { hardwareAcceleratedDecoding, minimizeLatency, customHeaders } =
     mergedOptions;
-  if (hardwareAcceleratedDecoding) command.inputOption("-hwaccel", "auto");
+  if (hardwareAcceleratedDecoding) command.inputOptions("-hwaccel", "auto");
 
   if (minimizeLatency) {
-    command.addOptions(["-fflags nobuffer", "-analyzeduration 0"]);
+    command.inputOptions(
+      "-fflags nobuffer",
+      "-flags lowdelay",
+      "-flush_packets 1",
+      "-max_delay 100000",
+    );
   }
 
   if (isHttpUrl) {
-    command.inputOption(
+    command.inputOptions(
       "-headers",
       Object.entries(customHeaders)
         .map(([k, v]) => `${k}: ${v}`)
@@ -246,11 +278,11 @@ export function prepareStream(
   }
 
   if (isSrt) {
-    command.inputOption("-scan_all_pmts 0");
+    command.inputOptions("-scan_all_pmts 0");
   }
 
   // general output options
-  command.output(output).outputFormat("nut");
+  command.output(output).format("nut");
 
   // video setup
   const {
@@ -263,16 +295,16 @@ export function prepareStream(
     videoCodec,
     encoder,
   } = mergedOptions;
-  command.addOutputOption("-map 0:v");
+  command.outputOptions("-map 0:v");
 
   if (noTranscoding) {
     command.videoCodec("copy");
   } else {
-    command.videoFilter(`scale=${width}:${height}`);
+    command.videoFilters(`scale=${width}:${height}`);
 
-    if (frameRate) command.fpsOutput(frameRate);
+    if (frameRate) command.fps(frameRate);
 
-    command.addOutputOption([
+    command.outputOptions([
       "-b:v",
       `${bitrateVideo}k`,
       "-maxrate:v",
@@ -292,7 +324,7 @@ export function prepareStream(
       throw new Error(`Encoder settings not specified for ${videoCodec}`);
     command
       .videoCodec(encoderSettings.name)
-      .videoFilter(encoderSettings.outFilters ?? [])
+      .videoFilters(encoderSettings.outFilters ?? [])
       .outputOptions(encoderSettings.options)
       .outputOptions(encoderSettings.globalOptions ?? []);
   }
@@ -301,14 +333,14 @@ export function prepareStream(
   const { includeAudio, bitrateAudio } = mergedOptions;
   if (includeAudio)
     command
-      .addOutputOption("-map 0:a:0?")
+      .outputOptions("-map 0:a:0?")
       .audioChannels(2)
       /*
        * I don't have much surround sound material to test this with,
        * if you do and you have better settings for this, feel free to
        * contribute!
        */
-      .addOutputOption("-lfe_mix_level 1")
+      .outputOptions("-lfe_mix_level 1")
       .audioFrequency(48000)
       .audioCodec("libopus")
       .audioBitrate(`${bitrateAudio}k`)
@@ -319,27 +351,8 @@ export function prepareStream(
     mergedOptions.customFfmpegFlags &&
     mergedOptions.customFfmpegFlags.length > 0
   ) {
-    command.addOptions(mergedOptions.customFfmpegFlags);
+    command.outputOptions(mergedOptions.customFfmpegFlags);
   }
-
-  // exit handling
-  const promise = new Promise<void>((resolve, reject) => {
-    command.on("error", (err) => {
-      if (cancelSignal?.aborted)
-        /**
-         * fluent-ffmpeg might throw an error when SIGTERM is sent to
-         * the process, so we check if the abort signal is triggered
-         * and throw that instead
-         */
-        reject(cancelSignal.reason);
-      else reject(err);
-    });
-    command.on("end", () => resolve());
-  });
-  promise.catch(() => {});
-  cancelSignal?.addEventListener("abort", () => command.kill("SIGTERM"), {
-    once: true,
-  });
 
   // realtime control mechanism
   let currentVolume = 1;
@@ -368,12 +381,15 @@ export function prepareStream(
     });
   }
 
-  command.run();
+  command.once("start", (cmdline) => {
+    logger.debug(`Starting ffmpeg: ${cmdline}`);
+  });
+  const promise = command.run(cancelSignal);
 
   return {
     command,
     output,
-    promise,
+    promise: promise as Promise<unknown>,
     controller: {
       get volume() {
         return currentVolume;
@@ -608,7 +624,7 @@ export async function playStream(
       cleanupFuncs.push(() => video.stream.off("data", updatePreview));
     })();
   }
-  return new Promise<void>((resolve, reject) => {
+  const promise = new Promise<void>((resolve, reject) => {
     cleanupFuncs.push(() => {
       stopStream();
       conn.mediaConnection.setSpeaking(false);
@@ -633,5 +649,7 @@ export async function playStream(
       cleanup();
       resolve();
     });
-  }).catch(() => {});
+  });
+  promise.catch(() => {});
+  return promise;
 }

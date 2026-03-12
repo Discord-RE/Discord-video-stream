@@ -8,9 +8,7 @@ import {
 import { Log } from "debug-level";
 import { randomUUID } from "node:crypto";
 import { AVCodecID } from "./LibavCodecId.js";
-import { once } from "node:events";
 import { PassThrough } from "node:stream";
-import { finished } from "node:stream/promises";
 import type { CodecParameters, Packet } from "node-av";
 import type { Readable } from "node:stream";
 
