@@ -14,21 +14,21 @@
     },
     "dependencies": {
         "@lng2004/node-datachannel": "0.32.0-20260202",
-        "@snazzah/davey": "^0.1.8",
+        "@snazzah/davey": "^0.1.12",
         "debug-level": "^4.1.1",
         "fluent-ffmpeg-simplified": "^0.1.0",
-        "node-av": "^5.2.2",
+        "node-av": "^6.1.1",
         "p-debounce": "^5.1.0",
-        "sharp": "^0.35.0",
+        "sharp": "^0.35.3",
         "zeromq": "^6.5.0"
     },
     "devDependencies": {
-        "@biomejs/biome": "2.3.8",
+        "@biomejs/biome": "2.5.5",
         "@types/fluent-ffmpeg": "^2.1.28",
-        "@types/node": "^25.0.1",
+        "@types/node": "^26.1.1",
         "discord.js-selfbot-v13": "^3.7.1",
-        "pkg-pr-new": "^0.0.62",
-        "typescript": "^5.9.3"
+        "pkg-pr-new": "^0.0.80",
+        "typescript": "^7.0.2"
     },
     "peerDependencies": {
         "discord.js-selfbot-v13": "^3.6.0"
