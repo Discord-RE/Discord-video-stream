@@ -27,4 +27,4 @@ jobs:
         run: pnpm build
 
       - name: Publish
-        run: pnpm exec pkg-pr-new publish
+        run: pnpm exec pkg-pr-new publish --no-compact
