@@ -1,23 +1,22 @@
-import pDebounce from "p-debounce";
-import sharp from "sharp";
+import { PassThrough, type Readable } from "node:stream";
 import Log from "debug-level";
 import { FFmpegCommand } from "fluent-ffmpeg-simplified";
-import { type Packet, AV_PKT_FLAG_KEY } from "node-av";
-import { PassThrough, type Readable } from "node:stream";
-import { demux } from "./LibavDemuxer.js";
-import { VideoStream } from "./VideoStream.js";
-import { AudioStream } from "./AudioStream.js";
+import { AV_PKT_FLAG_KEY, type Packet } from "node-av";
+import pDebounce from "p-debounce";
+import sharp from "sharp";
+import type { Request } from "zeromq";
+import type { Streamer } from "../client/index.js";
+import type { WebRtcConnWrapper } from "../client/voice/WebRtcWrapper.js";
+import type { SupportedVideoCodec } from "../utils.js";
 import { isBun, isDeno, isFiniteNonZero } from "../utils.js";
+import { AudioStream } from "./AudioStream.js";
+import type { EncoderSettingsGetter } from "./encoders/index.js";
+import { Encoders } from "./encoders/index.js";
 import { AVCodecID } from "./LibavCodecId.js";
 import { createDecoder } from "./LibavDecoder.js";
-import { Encoders } from "./encoders/index.js";
-
-import type { Request } from "zeromq";
-import type { SupportedVideoCodec } from "../utils.js";
-import type { Streamer } from "../client/index.js";
-import type { EncoderSettingsGetter } from "./encoders/index.js";
 import type { VideoStreamInfo } from "./LibavDemuxer.js";
-import type { WebRtcConnWrapper } from "../client/voice/WebRtcWrapper.js";
+import { demux } from "./LibavDemuxer.js";
+import { VideoStream } from "./VideoStream.js";
 
 export type PrepareStreamOptions = {
   /**
@@ -615,9 +614,7 @@ export async function playStream(
           .then((image) => streamer.setStreamPreview(image))
           .catch(() => {})
           .finally(() => {
-            frames.forEach((frame) => {
-              frame.free();
-            });
+            for (const frame of frames) frame.free();
           });
       });
       video.stream.on("data", updatePreview);

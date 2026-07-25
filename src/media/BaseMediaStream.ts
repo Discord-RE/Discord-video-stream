@@ -1,6 +1,6 @@
-import { Log } from "debug-level";
-import { setTimeout } from "node:timers/promises";
 import { Writable } from "node:stream";
+import { setTimeout } from "node:timers/promises";
+import { Log } from "debug-level";
 import type { Packet } from "node-av";
 
 export class BaseMediaStream extends Writable {
@@ -15,6 +15,7 @@ export class BaseMediaStream extends Writable {
   private _startPts?: number;
   private _sync = true;
   private _syncStream?: BaseMediaStream;
+  private _frameSendDeadlineExceededCount = 0;
 
   constructor(type: string, noSleep = false) {
     super({ objectMode: true, highWaterMark: 0 });
@@ -63,21 +64,21 @@ export class BaseMediaStream extends Writable {
   ): Promise<void> {
     throw new Error("Not implemented");
   }
-  private ptsDelta() {
+  private get ptsDelta() {
     if (this.pts !== undefined && this.syncStream?.pts !== undefined)
       return this.pts - this.syncStream.pts;
     return undefined;
   }
-  private isAhead() {
-    const delta = this.ptsDelta();
+  private get isAhead() {
+    const delta = this.ptsDelta;
     return (
       this.syncStream?.writableEnded === false &&
       delta !== undefined &&
       delta > this.syncTolerance
     );
   }
-  private isBehind() {
-    const delta = this.ptsDelta();
+  private get isBehind() {
+    const delta = this.ptsDelta;
     return (
       this.syncStream?.writableEnded === false &&
       delta !== undefined &&
@@ -122,14 +123,18 @@ export class BaseMediaStream extends Writable {
       `Frame sent in ${sendTime.toFixed(2)}ms (${(ratio * 100).toFixed(2)}% frametime)`,
     );
     if (ratio > 1) {
-      this._loggerSend.warn(
-        {
-          frame_size: data.length,
-          duration: sendTime,
-          frametime,
-        },
-        `Frame takes too long to send (${(ratio * 100).toFixed(2)}% frametime)`,
-      );
+      this._frameSendDeadlineExceededCount++;
+      if (this._frameSendDeadlineExceededCount > 10)
+        this._loggerSend.warn(
+          {
+            frame_size: data.length,
+            duration: sendTime,
+            frametime,
+          },
+          `Frame takes too long to send (${(ratio * 100).toFixed(2)}% frametime)`,
+        );
+    } else {
+      this._frameSendDeadlineExceededCount = 0;
     }
 
     this._startTime ??= start_sendFrame;
@@ -143,7 +148,7 @@ export class BaseMediaStream extends Writable {
     );
     if (this._noSleep || sleep === 0) {
       callback(null);
-    } else if (this.sync && this.isBehind()) {
+    } else if (this.sync && this.isBehind) {
       this._loggerSync.debug(
         {
           stats: {
@@ -155,7 +160,7 @@ export class BaseMediaStream extends Writable {
       );
       this.resetTimingCompensation();
       callback(null);
-    } else if (this.sync && this.isAhead()) {
+    } else if (this.sync && this.isAhead) {
       do {
         this._loggerSync.debug(
           {
@@ -168,7 +173,7 @@ export class BaseMediaStream extends Writable {
           `Stream is ahead. Waiting for ${frametime}ms`,
         );
         await setTimeout(frametime);
-      } while (this.sync && this.isAhead());
+      } while (this.sync && this.isAhead);
       this.resetTimingCompensation();
       callback(null);
     } else {

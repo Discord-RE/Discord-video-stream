@@ -1,20 +1,20 @@
-import Davey from "@snazzah/davey";
-import EventEmitter from "node:events";
-import { Log } from "debug-level";
 import { randomUUID } from "node:crypto";
-import { CodecPayloadType } from "./CodecPayloadType.js";
-import { WebRtcConnWrapper } from "./WebRtcWrapper.js";
-import { VoiceOpCodes, VoiceOpCodesBinary } from "./VoiceOpCodes.js";
+import EventEmitter from "node:events";
+import Davey from "@snazzah/davey";
+import { Log } from "debug-level";
 import {
   STREAMS_SIMULCAST,
   type SupportedEncryptionModes,
 } from "../../utils.js";
+import type { Streamer } from "../Streamer.js";
+import { CodecPayloadType } from "./CodecPayloadType.js";
 import type {
-  Message,
   GatewayRequest,
   GatewayResponse,
+  Message,
 } from "./VoiceMessageTypes.js";
-import type { Streamer } from "../Streamer.js";
+import { VoiceOpCodes, VoiceOpCodesBinary } from "./VoiceOpCodes.js";
+import { WebRtcConnWrapper } from "./WebRtcWrapper.js";
 
 type VoiceConnectionStatus = {
   hasSession: boolean;

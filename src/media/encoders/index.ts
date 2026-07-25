@@ -12,10 +12,10 @@ export type EncoderSettingsGetter = (
   bitrateMax: number,
 ) => Partial<Record<SupportedVideoCodec, EncoderSettings>>;
 
-import { software } from "./software.js";
-import { nvenc } from "./nvenc.js";
-import { vaapi } from "./vaapi.js";
 import { merge } from "./merge.js";
+import { nvenc } from "./nvenc.js";
+import { software } from "./software.js";
+import { vaapi } from "./vaapi.js";
 
 const Encoders = {
   software,
