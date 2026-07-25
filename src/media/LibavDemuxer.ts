@@ -180,7 +180,7 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
       });
     }
 
-    const codecpar = vbsf.at(-1)?.outputCodecParameters ?? vStream.codecpar;
+    const codecpar = vStream.codecpar;
     vInfo = {
       index: vStream.index,
       codec: codecId,
