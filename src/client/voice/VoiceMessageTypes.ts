@@ -1,5 +1,5 @@
-import type { VoiceOpCodes } from "./VoiceOpCodes.js";
 import type { SupportedEncryptionModes } from "../../utils.js";
+import type { VoiceOpCodes } from "./VoiceOpCodes.js";
 
 type StreamInfo = {
   active: boolean;

@@ -1,5 +1,5 @@
-import { BaseMediaStream } from "./BaseMediaStream.js";
 import type { WebRtcConnWrapper } from "../client/voice/WebRtcWrapper.js";
+import { BaseMediaStream } from "./BaseMediaStream.js";
 
 export class VideoStream extends BaseMediaStream {
   private _conn: WebRtcConnWrapper;

@@ -1,6 +1,6 @@
-import { Log } from "debug-level";
-import { setTimeout } from "node:timers/promises";
 import { Writable } from "node:stream";
+import { setTimeout } from "node:timers/promises";
+import { Log } from "debug-level";
 import type { Packet } from "node-av";
 
 export class BaseMediaStream extends Writable {
@@ -133,8 +133,7 @@ export class BaseMediaStream extends Writable {
           },
           `Frame takes too long to send (${(ratio * 100).toFixed(2)}% frametime)`,
         );
-    }
-    else {
+    } else {
       this._frameSendDeadlineExceededCount = 0;
     }
 
