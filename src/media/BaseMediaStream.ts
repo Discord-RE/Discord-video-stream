@@ -63,21 +63,21 @@ export class BaseMediaStream extends Writable {
   ): Promise<void> {
     throw new Error("Not implemented");
   }
-  private ptsDelta() {
+  private get ptsDelta() {
     if (this.pts !== undefined && this.syncStream?.pts !== undefined)
       return this.pts - this.syncStream.pts;
     return undefined;
   }
-  private isAhead() {
-    const delta = this.ptsDelta();
+  private get isAhead() {
+    const delta = this.ptsDelta;
     return (
       this.syncStream?.writableEnded === false &&
       delta !== undefined &&
       delta > this.syncTolerance
     );
   }
-  private isBehind() {
-    const delta = this.ptsDelta();
+  private get isBehind() {
+    const delta = this.ptsDelta;
     return (
       this.syncStream?.writableEnded === false &&
       delta !== undefined &&
@@ -143,7 +143,7 @@ export class BaseMediaStream extends Writable {
     );
     if (this._noSleep || sleep === 0) {
       callback(null);
-    } else if (this.sync && this.isBehind()) {
+    } else if (this.sync && this.isBehind) {
       this._loggerSync.debug(
         {
           stats: {
@@ -155,7 +155,7 @@ export class BaseMediaStream extends Writable {
       );
       this.resetTimingCompensation();
       callback(null);
-    } else if (this.sync && this.isAhead()) {
+    } else if (this.sync && this.isAhead) {
       do {
         this._loggerSync.debug(
           {
@@ -168,7 +168,7 @@ export class BaseMediaStream extends Writable {
           `Stream is ahead. Waiting for ${frametime}ms`,
         );
         await setTimeout(frametime);
-      } while (this.sync && this.isAhead());
+      } while (this.sync && this.isAhead);
       this.resetTimingCompensation();
       callback(null);
     } else {
