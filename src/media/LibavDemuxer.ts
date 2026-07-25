@@ -118,9 +118,8 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
     aPipe.off("drain", readFrame);
     vPipe.end();
     aPipe.end();
-    vbsf.forEach((e) => {
-      e.close();
-    });
+    for (const el of vbsf)
+      el.close();
   };
 
   const vStream = demuxer.video();
@@ -175,7 +174,7 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
       }
     } catch (e) {
       cleanup();
-      throw new Error(`Failed to construct bitstream filterchain`, {
+      throw new Error("Failed to construct bitstream filterchain", {
         cause: (e as Error).cause,
       });
     }
@@ -250,7 +249,8 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
           }
           cleanup();
           return;
-        } else if (inPacket) {
+        }
+        if (inPacket) {
           const streamIndex = inPacket.streamIndex;
           if (vInfo && vInfo.index === streamIndex) {
             loggerFrameVideo.trace("Received a video packet");
