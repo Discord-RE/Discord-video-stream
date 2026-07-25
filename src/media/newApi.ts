@@ -615,9 +615,8 @@ export async function playStream(
           .then((image) => streamer.setStreamPreview(image))
           .catch(() => {})
           .finally(() => {
-            frames.forEach((frame) => {
+            for (const frame of frames)
               frame.free();
-            });
           });
       });
       video.stream.on("data", updatePreview);
