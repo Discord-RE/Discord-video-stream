@@ -64,9 +64,9 @@
     ],
     "license": "ISC",
     "bugs": {
-        "url": "https://github.com/dank074/Discord-video-stream/issues"
+        "url": "https://github.com/Discord-RE/Discord-video-stream/issues"
     },
-    "homepage": "https://github.com/dank074/Discord-video-stream#readme",
+    "homepage": "https://github.com/Discord-RE/Discord-video-stream#readme",
     "pnpm": {
         "onlyBuiltDependencies": [
             "@lng2004/node-datachannel",
