@@ -15,6 +15,7 @@ export class BaseMediaStream extends Writable {
   private _startPts?: number;
   private _sync = true;
   private _syncStream?: BaseMediaStream;
+  private _frameSendDeadlineExceededCount = 0;
 
   constructor(type: string, noSleep = false) {
     super({ objectMode: true, highWaterMark: 0 });
@@ -122,14 +123,19 @@ export class BaseMediaStream extends Writable {
       `Frame sent in ${sendTime.toFixed(2)}ms (${(ratio * 100).toFixed(2)}% frametime)`,
     );
     if (ratio > 1) {
-      this._loggerSend.warn(
-        {
-          frame_size: data.length,
-          duration: sendTime,
-          frametime,
-        },
-        `Frame takes too long to send (${(ratio * 100).toFixed(2)}% frametime)`,
-      );
+      this._frameSendDeadlineExceededCount++;
+      if (this._frameSendDeadlineExceededCount > 10)
+        this._loggerSend.warn(
+          {
+            frame_size: data.length,
+            duration: sendTime,
+            frametime,
+          },
+          `Frame takes too long to send (${(ratio * 100).toFixed(2)}% frametime)`,
+        );
+    }
+    else {
+      this._frameSendDeadlineExceededCount = 0;
     }
 
     this._startTime ??= start_sendFrame;
