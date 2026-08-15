@@ -13,7 +13,7 @@
         "access": "public"
     },
     "dependencies": {
-        "@lng2004/node-datachannel": "0.32.0-20260202",
+        "@lng2004/node-datachannel": "0.32.3-20260815.5",
         "@snazzah/davey": "^0.1.12",
         "debug-level": "^4.1.1",
         "fluent-ffmpeg-simplified": "^0.1.0",
