@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@lng2004/node-datachannel':
-        specifier: 0.32.3-20260815.5
-        version: 0.32.3-20260815.5
+        specifier: 0.33.2-20260825
+        version: 0.33.2-20260825
       '@snazzah/davey':
         specifier: ^0.1.12
         version: 0.1.12(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)
@@ -309,8 +309,57 @@ packages:
   '@leichtgewicht/ip-codec@2.0.5':
     resolution: {integrity: sha512-Vo+PSpZG2/fmgmiNzYK9qWRh8h/CHrwD0mo1h1DzL4yzHNSfWYujGTYsWGreD000gcgmZ7K4Ys6Tx9TxtsKdDw==}
 
-  '@lng2004/node-datachannel@0.32.3-20260815.5':
-    resolution: {integrity: sha512-DXyied24LJGvEEvgMirehGOmFmFzmsNLy0PT6OyEy+ulte7AUJB+tOvKtkUWiHz0fS4cVUEaA52DRnrsOVjcyg==}
+  '@lng2004/ndc-android-arm64@0.33.2-20260825':
+    resolution: {integrity: sha512-4IaXL2o0rdSMYqDosvLhVZwkk85v0TOoNkeXBFsCs8UfwaHtzQ7ZGIuzF2vZRTgPFNxfc+eFDmCNHPdixceUdA==}
+    cpu: [arm64]
+    os: [android]
+
+  '@lng2004/ndc-darwin-arm64@0.33.2-20260825':
+    resolution: {integrity: sha512-Bsz+7EdSDYHAtpfujFmf0Tu39xpugd/aksZr6MwV6Ga5mH7Kxid5m0UB4xTBYnorrS4WnbXGCl/AOIYpk8sNTg==}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@lng2004/ndc-darwin-x64@0.33.2-20260825':
+    resolution: {integrity: sha512-i7bl+8cKEA/aaLycHrS7enpR6TPUgF0RCtiIteIcY44LZEK9KBmDT+8Tp2uPx2uNrBR5PJHS4tuXgTzkX1N9cA==}
+    cpu: [x64]
+    os: [darwin]
+
+  '@lng2004/ndc-linux-arm64-gnu@0.33.2-20260825':
+    resolution: {integrity: sha512-393a3bnoteCWZt4i5683+NhNYqw2zTXM3NLEgQQ9BMVSFMcrMjM9qiEnBSPWtBnX9vSlr6NjVvSWyoXChVgmGw==}
+    cpu: [arm64]
+    os: [linux]
+    libc: [glibc]
+
+  '@lng2004/ndc-linux-arm64-musl@0.33.2-20260825':
+    resolution: {integrity: sha512-+7XdCJjTfAC9WdKaBoKfiS+k5Hk0ZPWiYK8kZUCfXOlaHV8aXB1tLCnNnmFu5zj0diVZ9SuNm752Jnz3Q3zzdA==}
+    cpu: [arm64]
+    os: [linux]
+    libc: [musl]
+
+  '@lng2004/ndc-linux-x64-gnu@0.33.2-20260825':
+    resolution: {integrity: sha512-VT0ET2LfAJKYLjow2ccb/jhHo6ylG0cPzuYJ9BFgOLmmC/g/6HLLwTR5OwKQYG5AUh31xTd5p+Cu+2zfmXPXGg==}
+    cpu: [x64]
+    os: [linux]
+    libc: [glibc]
+
+  '@lng2004/ndc-linux-x64-musl@0.33.2-20260825':
+    resolution: {integrity: sha512-0GMbxA0lgn3IXMdEHFTI1LWRk+jPVtIhT8HuR9u73Cnu9RRSJlW3Lt5dR2PjluyDIWYGvoitFCHrpTy4SSGqbw==}
+    cpu: [x64]
+    os: [linux]
+    libc: [musl]
+
+  '@lng2004/ndc-win32-arm64-msvc@0.33.2-20260825':
+    resolution: {integrity: sha512-c0/Ii+M0Xz61obldQGvvAASfqCKU9IUwjlE8t8d87Z8sMoMbR9lY6KWi1ZFvHXLhPjaAWOHXn3AQOuX3SdDchg==}
+    cpu: [arm64]
+    os: [win32]
+
+  '@lng2004/ndc-win32-x64-msvc@0.33.2-20260825':
+    resolution: {integrity: sha512-4QfzsQg5bEzqvGyfC72Jg6HHwICc5IbpXN/zs8Vf9vylfZJ+ewdUNtTTpT4SIRtSWPvdp5LwP+ck42S5Do5OPA==}
+    cpu: [x64]
+    os: [win32]
+
+  '@lng2004/node-datachannel@0.33.2-20260825':
+    resolution: {integrity: sha512-2WcLE4q/HCQQ7oL2IapsrzZuMIvlQ7upCrryShXGNFdNYLB7r8WnvLC/A20hBspxXaoSFzmbWV4xk3dFg6LbLg==}
     engines: {node: '>=18.20.0'}
 
   '@minhducsun2002/leb128@1.0.0':
@@ -984,11 +1033,6 @@ packages:
     resolution: {integrity: sha512-a6Ie3sxNVrIkx5TQhe5+nbPbyLQg0jnrMNDYoXQpDXBaELxdDgwUVmlVThOSj7oKB3kEIrji5xyhSvWAWf5ABQ==}
     hasBin: true
 
-  pkg-prebuilds@1.1.0:
-    resolution: {integrity: sha512-jyai+KTQ2OwbN6iRYw88XbYOMgtpoSYJpjYebx7d9ihqz3txNi3ucsBt3va0iVWe6svSlaqpijMHFF/eJCMZzg==}
-    engines: {node: '>= 14.15.0'}
-    hasBin: true
-
   pngjs@5.0.0:
     resolution: {integrity: sha512-40QW5YalBNfQo5yRYmiw7Yz6TKKVr3h6970B2YE+3fQpsWcrbj1PzJgxeJ19DRQjhMbKPIuMY8rFaXc8moolVw==}
     engines: {node: '>=10.13.0'}
@@ -1435,9 +1479,46 @@ snapshots:
   '@leichtgewicht/ip-codec@2.0.5':
     optional: true
 
-  '@lng2004/node-datachannel@0.32.3-20260815.5':
+  '@lng2004/ndc-android-arm64@0.33.2-20260825':
+    optional: true
+
+  '@lng2004/ndc-darwin-arm64@0.33.2-20260825':
+    optional: true
+
+  '@lng2004/ndc-darwin-x64@0.33.2-20260825':
+    optional: true
+
+  '@lng2004/ndc-linux-arm64-gnu@0.33.2-20260825':
+    optional: true
+
+  '@lng2004/ndc-linux-arm64-musl@0.33.2-20260825':
+    optional: true
+
+  '@lng2004/ndc-linux-x64-gnu@0.33.2-20260825':
+    optional: true
+
+  '@lng2004/ndc-linux-x64-musl@0.33.2-20260825':
+    optional: true
+
+  '@lng2004/ndc-win32-arm64-msvc@0.33.2-20260825':
+    optional: true
+
+  '@lng2004/ndc-win32-x64-msvc@0.33.2-20260825':
+    optional: true
+
+  '@lng2004/node-datachannel@0.33.2-20260825':
     dependencies:
-      pkg-prebuilds: 1.1.0
+      detect-libc: 2.1.2
+    optionalDependencies:
+      '@lng2004/ndc-android-arm64': 0.33.2-20260825
+      '@lng2004/ndc-darwin-arm64': 0.33.2-20260825
+      '@lng2004/ndc-darwin-x64': 0.33.2-20260825
+      '@lng2004/ndc-linux-arm64-gnu': 0.33.2-20260825
+      '@lng2004/ndc-linux-arm64-musl': 0.33.2-20260825
+      '@lng2004/ndc-linux-x64-gnu': 0.33.2-20260825
+      '@lng2004/ndc-linux-x64-musl': 0.33.2-20260825
+      '@lng2004/ndc-win32-arm64-msvc': 0.33.2-20260825
+      '@lng2004/ndc-win32-x64-msvc': 0.33.2-20260825
 
   '@minhducsun2002/leb128@1.0.0':
     optional: true
@@ -2091,8 +2172,6 @@ snapshots:
   path-key@4.0.0: {}
 
   pkg-pr-new@0.0.80: {}
-
-  pkg-prebuilds@1.1.0: {}
 
   pngjs@5.0.0: {}
 
