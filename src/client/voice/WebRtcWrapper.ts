@@ -37,7 +37,7 @@ export class WebRtcConnWrapper {
   private _videoPacketizer?: RtpPacketizer;
   private _videoPacer?: PacingHandler;
   private _videoCodec?: SupportedVideoCodec;
-  private _bitrateCalculator = new BitrateCalculator();
+  private _bitrateCalculator = new BitrateCalculator(250);
 
   constructor(mediaConn: BaseMediaConnection) {
     this._mediaConn = mediaConn;
@@ -119,7 +119,7 @@ export class WebRtcConnWrapper {
     if (!this.ready) return;
     if (!this._videoPacketizer) return;
     this._videoPacer?.setBitrate(
-      this._bitrateCalculator.addSample(frame.length),
+      Math.max(1000000, this._bitrateCalculator.addSample(frame.length) * 1.25),
     );
     const { rtpConfig } = this._videoPacketizer;
     const { clockRate } = rtpConfig;
