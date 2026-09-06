@@ -22,6 +22,7 @@ import {
 } from "../processing/AnnexBHelper.js";
 import { rewriteSPSVUI } from "../processing/SPSVUIRewriter.js";
 import type { BaseMediaConnection } from "./BaseMediaConnection.js";
+import { BitrateCalculator } from "./BitrateCalculator.js";
 import { CodecPayloadType } from "./CodecPayloadType.js";
 
 export class WebRtcConnWrapper {
@@ -34,7 +35,9 @@ export class WebRtcConnWrapper {
   private _videoTrack?: Track;
   private _audioPacketizer?: RtpPacketizer;
   private _videoPacketizer?: RtpPacketizer;
+  private _videoPacer?: PacingHandler;
   private _videoCodec?: SupportedVideoCodec;
+  private _bitrateCalculator = new BitrateCalculator(250);
 
   constructor(mediaConn: BaseMediaConnection) {
     this._mediaConn = mediaConn;
@@ -115,6 +118,9 @@ export class WebRtcConnWrapper {
   public sendVideoFrame(frame: Buffer, frametime: number) {
     if (!this.ready) return;
     if (!this._videoPacketizer) return;
+    this._videoPacer?.setBitrate(
+      Math.max(1000000, this._bitrateCalculator.addSample(frame.length) * 1.25),
+    );
     const { rtpConfig } = this._videoPacketizer;
     const { clockRate } = rtpConfig;
     if (this._videoCodec === "H264") {
@@ -206,8 +212,8 @@ export class WebRtcConnWrapper {
     }
     this._videoPacketizer.addToChain(new RtcpSrReporter(rtpConfigVideo));
     this._videoPacketizer.addToChain(new RtcpNackResponder());
-    this._videoPacketizer.addToChain(new PacingHandler(25 * 1000 * 1000, 1));
-
+    this._videoPacer = new PacingHandler(10 * 1000 * 1000, 2);
+    this._videoPacketizer.addToChain(this._videoPacer);
     this._setMediaHandler();
   }
 }
