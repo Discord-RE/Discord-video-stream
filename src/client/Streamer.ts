@@ -4,7 +4,7 @@ import type {
   DMChannel,
   GroupDMChannel,
   VoiceBasedChannel,
-} from "discord.js-selfbot-v13";
+} from "@lng2004/discord.js-selfbot-v13";
 import { generateStreamKey, parseStreamKey } from "../utils.js";
 import type { GatewayEvent, GatewayEventMap } from "./GatewayEvents.js";
 import { GatewayOpCodes } from "./GatewayOpCodes.js";

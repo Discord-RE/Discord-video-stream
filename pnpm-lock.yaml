@@ -16,13 +16,13 @@ importers:
         version: 0.1.12(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)
       debug-level:
         specifier: ^4.1.1
-        version: 4.1.1
+        version: 4.1.1(supports-color@7.2.0)
       fluent-ffmpeg-simplified:
         specifier: ^0.1.0
         version: 0.1.0
       node-av:
         specifier: ^6.1.1
-        version: 6.1.1
+        version: 6.1.1(supports-color@7.2.0)
       p-debounce:
         specifier: ^5.1.0
         version: 5.1.0
@@ -36,15 +36,15 @@ importers:
       '@biomejs/biome':
         specifier: 2.5.5
         version: 2.5.5
+      '@lng2004/discord.js-selfbot-v13':
+        specifier: ^3.7.2
+        version: 3.7.2(supports-color@7.2.0)
       '@types/fluent-ffmpeg':
         specifier: ^2.1.28
         version: 2.1.28
       '@types/node':
         specifier: ^26.1.1
         version: 26.2.0
-      discord.js-selfbot-v13:
-        specifier: ^3.7.1
-        version: 3.7.1
       pkg-pr-new:
         specifier: ^0.0.80
         version: 0.0.80
@@ -308,6 +308,10 @@ packages:
 
   '@leichtgewicht/ip-codec@2.0.5':
     resolution: {integrity: sha512-Vo+PSpZG2/fmgmiNzYK9qWRh8h/CHrwD0mo1h1DzL4yzHNSfWYujGTYsWGreD000gcgmZ7K4Ys6Tx9TxtsKdDw==}
+
+  '@lng2004/discord.js-selfbot-v13@3.7.2':
+    resolution: {integrity: sha512-mqWXDAc2b47msMuq/B+VC98n1LGs6mVxMk9S+cutV2E0pVayTCpXFlmPL1qh6c3qyyZbQuA9WvPeSdyJTf9Nxg==}
+    engines: {node: '>=20.18'}
 
   '@lng2004/ndc-android-arm64@0.33.2-20260825':
     resolution: {integrity: sha512-4IaXL2o0rdSMYqDosvLhVZwkk85v0TOoNkeXBFsCs8UfwaHtzQ7ZGIuzF2vZRTgPFNxfc+eFDmCNHPdixceUdA==}
@@ -832,11 +836,6 @@ packages:
   discord-api-types@0.38.53:
     resolution: {integrity: sha512-HL1zz/UuZ+bbJjA/X8Kbxx9gk8v9rJAbTeWRNYKmIdjwJ7EovjlHgoJTxcLpATfNJ+AonOtMdy3Y5MVIJAAd/A==}
 
-  discord.js-selfbot-v13@3.7.1:
-    resolution: {integrity: sha512-cq5AW/CVvNIUVTSBdZmhsob7v+wjxnkFjuNULcxBXvxutVBnSZqZupsT/9CDtdnT71iKUn9N8GGL6GPg9aZlGA==}
-    engines: {node: '>=20.18'}
-    deprecated: Package no longer supported. Contact Support at https://www.npmjs.com/support for more info.
-
   dns-packet@5.6.1:
     resolution: {integrity: sha512-l4gcSouhcgIKRvyy99RNVOgxXiicE+2jZoNmaNmZ6JXiGajBOJAesk1OBlJuM5k2c+eudGdLxDqXuPCKIj6kpw==}
     engines: {node: '>=6'}
@@ -906,6 +905,62 @@ packages:
 
   ieee754@1.2.1:
     resolution: {integrity: sha512-dcyqhDvX1C46lXZcVqCpK+FtMRQVdIMN6/Df5js2zouUsqG7I6sFxitIC+7KYK29KdXOLHdu9zL4sFnoVQnqaA==}
+
+  impit-darwin-arm64@0.14.5:
+    resolution: {integrity: sha512-9B2fc/GLfb14SgIB6fK1zIgMsXPjCu14Xu9hudSyrZF+ue6XaJXFF/G1BS27FtDFdPAYAeUTReFOJBrglteYKg==}
+    engines: {node: '>= 10'}
+    cpu: [arm64]
+    os: [darwin]
+
+  impit-darwin-x64@0.14.5:
+    resolution: {integrity: sha512-EBH6H6SSRuMpw85/n+luT0EcbNbp6vQpUaEywH4bM2bk/xy8y6JN25O/Mzxa4YGUauoytmMqXs0kDzU5lxEjaA==}
+    engines: {node: '>= 10'}
+    cpu: [x64]
+    os: [darwin]
+
+  impit-linux-arm64-gnu@0.14.5:
+    resolution: {integrity: sha512-K7gB/KiekPZ+rDoFZqbBf1jROOHibZneGmM0lt/5xcn2lO+7e9GgArdPFj6sh4fvhtOckXxEc1ExpZP+lDy3Cg==}
+    engines: {node: '>= 10'}
+    cpu: [arm64]
+    os: [linux]
+    libc: [glibc]
+
+  impit-linux-arm64-musl@0.14.5:
+    resolution: {integrity: sha512-QvjBwjYu1LXP+ota94z9fThRZjH75/Bai36eHvXUTiiFyesRRsmClc72ReyyaarnNNjcsl2RActqFMDrx77DXg==}
+    engines: {node: '>= 10'}
+    cpu: [arm64]
+    os: [linux]
+    libc: [musl]
+
+  impit-linux-x64-gnu@0.14.5:
+    resolution: {integrity: sha512-+8hErR5H3+4N9r4vf5Cz6cSe57n/0zh5ksHBu2H9i5pENcM/VBRJ5qU5a3YjQwN4Ohtw/ROHBLF6V99eXUzThA==}
+    engines: {node: '>= 10'}
+    cpu: [x64]
+    os: [linux]
+    libc: [glibc]
+
+  impit-linux-x64-musl@0.14.5:
+    resolution: {integrity: sha512-e6526hjfX8BV3XNhB1V7Xd3dJIEbLEwudZagwt4XdLqKcxHsU0iYnUyTJCogSQeEtZFepCSKUnGeg/r2lzxHow==}
+    engines: {node: '>= 10'}
+    cpu: [x64]
+    os: [linux]
+    libc: [musl]
+
+  impit-win32-arm64-msvc@0.14.5:
+    resolution: {integrity: sha512-cABSwp3T1kNNp7++nyE8OlRuq8q9Cis3bWRHJjnTncfJ+NQlY0z1z3aLrI9ii1vvinCurCEWASuTptVSor5U1g==}
+    engines: {node: '>= 10'}
+    cpu: [arm64]
+    os: [win32]
+
+  impit-win32-x64-msvc@0.14.5:
+    resolution: {integrity: sha512-JvjNkJ3mSB9nf74Ftdlr+KNxCC0EOAH6KUfEUqWRrGEnniIaUOMknxQw56Gbk7Zr1/e5eAOwxS/EBlASp6Yj4w==}
+    engines: {node: '>= 10'}
+    cpu: [x64]
+    os: [win32]
+
+  impit@0.14.5:
+    resolution: {integrity: sha512-MzoDiPBL5+QI5IEro4VDgZdm0BPY0LIf8tUykEFDjEI8NrjRL/qiiCqg4GDlIg5UbJzrKwCdvIgpRRArbbu7Dg==}
+    engines: {node: '>= 20'}
 
   inherits@2.0.4:
     resolution: {integrity: sha512-k/vGaX4/Yla3WzyMCvTQOXYeIHvqOKtnqBduzTHpzpQZzAskKMhZ2K+EnBiSM9zGSoIFeMpXKxa4dYeZIQqewQ==}
@@ -1204,10 +1259,6 @@ packages:
   undici-types@8.3.0:
     resolution: {integrity: sha512-j375ScV60dom+YkPFIfTLcOiPxkN/buHz5GobjLhixFuANaNs3C9l4GmrWqejgXWJ7BbJcFYpTEUkS1Ge8bpZQ==}
 
-  undici@7.29.0:
-    resolution: {integrity: sha512-IDxfleLmmbSskfWSUATiN1nfn2rDuvnMOqb5CWR92iIfojA0Ud+ulOAAEQ57LPr9rWmsreUyf5lwyao+7GNNVw==}
-    engines: {node: '>=20.18.1'}
-
   unicorn-magic@0.3.0:
     resolution: {integrity: sha512-+QBBXBCvifc56fsbuxZQ6Sic3wqqc3WWaqxs58gvJrcOuN83HGTCwz3oS5phzU9LthRNE9VrJCFCLUgHeeFnfA==}
     engines: {node: '>=18'}
@@ -1478,6 +1529,32 @@ snapshots:
 
   '@leichtgewicht/ip-codec@2.0.5':
     optional: true
+
+  '@lng2004/discord.js-selfbot-v13@3.7.2(supports-color@7.2.0)':
+    dependencies:
+      '@discordjs/builders': 1.14.1
+      '@discordjs/collection': 2.1.1
+      '@sapphire/async-queue': 1.5.5
+      '@sapphire/shapeshift': 4.0.0
+      discord-api-types: 0.38.53
+      fetch-cookie: 3.2.0
+      find-process: 2.1.1
+      impit: 0.14.5
+      otplib: 12.0.1
+      prism-media: 1.3.5
+      qrcode: 1.5.4
+      tough-cookie: 5.1.2
+      tree-kill: 1.2.2
+      werift-rtp: 0.8.9(supports-color@7.2.0)
+      ws: 8.21.3
+    transitivePeerDependencies:
+      - '@discordjs/opus'
+      - bufferutil
+      - ffmpeg-static
+      - node-opus
+      - opusscript
+      - supports-color
+      - utf-8-validate
 
   '@lng2004/ndc-android-arm64@0.33.2-20260825':
     optional: true
@@ -1917,7 +1994,7 @@ snapshots:
       shebang-command: 2.0.0
       which: 2.0.2
 
-  debug-level@4.1.1:
+  debug-level@4.1.1(supports-color@7.2.0):
     dependencies:
       asyncc: 2.0.9
       chalk: 4.1.2
@@ -1927,17 +2004,21 @@ snapshots:
       ms: 2.1.3
       sonic-boom: 4.2.1
     optionalDependencies:
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@7.2.0)
     transitivePeerDependencies:
       - supports-color
 
-  debug@4.4.0:
+  debug@4.4.0(supports-color@7.2.0):
     dependencies:
       ms: 2.1.3
+    optionalDependencies:
+      supports-color: 7.2.0
 
-  debug@4.4.3:
+  debug@4.4.3(supports-color@7.2.0):
     dependencies:
       ms: 2.1.3
+    optionalDependencies:
+      supports-color: 7.2.0
     optional: true
 
   decamelize@1.2.0: {}
@@ -1947,32 +2028,6 @@ snapshots:
   dijkstrajs@1.0.3: {}
 
   discord-api-types@0.38.53: {}
-
-  discord.js-selfbot-v13@3.7.1:
-    dependencies:
-      '@discordjs/builders': 1.14.1
-      '@discordjs/collection': 2.1.1
-      '@sapphire/async-queue': 1.5.5
-      '@sapphire/shapeshift': 4.0.0
-      discord-api-types: 0.38.53
-      fetch-cookie: 3.2.0
-      find-process: 2.1.1
-      otplib: 12.0.1
-      prism-media: 1.3.5
-      qrcode: 1.5.4
-      tough-cookie: 5.1.2
-      tree-kill: 1.2.2
-      undici: 7.29.0
-      werift-rtp: 0.8.9
-      ws: 8.21.3
-    transitivePeerDependencies:
-      - '@discordjs/opus'
-      - bufferutil
-      - ffmpeg-static
-      - node-opus
-      - opusscript
-      - supports-color
-      - utf-8-validate
 
   dns-packet@5.6.1:
     dependencies:
@@ -2057,6 +2112,41 @@ snapshots:
 
   ieee754@1.2.1: {}
 
+  impit-darwin-arm64@0.14.5:
+    optional: true
+
+  impit-darwin-x64@0.14.5:
+    optional: true
+
+  impit-linux-arm64-gnu@0.14.5:
+    optional: true
+
+  impit-linux-arm64-musl@0.14.5:
+    optional: true
+
+  impit-linux-x64-gnu@0.14.5:
+    optional: true
+
+  impit-linux-x64-musl@0.14.5:
+    optional: true
+
+  impit-win32-arm64-msvc@0.14.5:
+    optional: true
+
+  impit-win32-x64-msvc@0.14.5:
+    optional: true
+
+  impit@0.14.5:
+    optionalDependencies:
+      impit-darwin-arm64: 0.14.5
+      impit-darwin-x64: 0.14.5
+      impit-linux-arm64-gnu: 0.14.5
+      impit-linux-arm64-musl: 0.14.5
+      impit-linux-x64-gnu: 0.14.5
+      impit-linux-x64-musl: 0.14.5
+      impit-win32-arm64-msvc: 0.14.5
+      impit-win32-x64-msvc: 0.14.5
+
   inherits@2.0.4: {}
 
   int64-buffer@1.1.0:
@@ -2122,7 +2212,7 @@ snapshots:
 
   node-addon-api@8.9.2: {}
 
-  node-av@6.1.1:
+  node-av@6.1.1(supports-color@7.2.0):
     dependencies:
       unzipper: 0.12.5
     optionalDependencies:
@@ -2134,7 +2224,7 @@ snapshots:
       '@seydx/node-av-win32-arm64-msvc': 6.1.1
       '@seydx/node-av-win32-x64-mingw': 6.1.1
       '@seydx/node-av-win32-x64-msvc': 6.1.1
-      werift: 0.23.0
+      werift: 0.23.0(supports-color@7.2.0)
     transitivePeerDependencies:
       - supports-color
 
@@ -2356,8 +2446,6 @@ snapshots:
 
   undici-types@8.3.0: {}
 
-  undici@7.29.0: {}
-
   unicorn-magic@0.3.0: {}
 
   universalify@2.0.1: {}
@@ -2372,38 +2460,38 @@ snapshots:
 
   util-deprecate@1.0.2: {}
 
-  werift-common@0.0.3:
+  werift-common@0.0.3(supports-color@7.2.0):
     dependencies:
       '@shinyoshiaki/jspack': 0.0.6
-      debug: 4.4.0
+      debug: 4.4.0(supports-color@7.2.0)
     transitivePeerDependencies:
       - supports-color
     optional: true
 
-  werift-dtls@0.5.8:
+  werift-dtls@0.5.8(supports-color@7.2.0):
     dependencies:
       '@fidm/x509': 1.2.1
       '@noble/curves': 1.9.7
       '@peculiar/x509': 1.14.3
       '@shinyoshiaki/binary-data': 0.6.1
-      debug: 4.4.0
+      debug: 4.4.0(supports-color@7.2.0)
       tweetnacl: 1.0.3
     transitivePeerDependencies:
       - supports-color
     optional: true
 
-  werift-ice@0.2.3:
+  werift-ice@0.2.3(supports-color@7.2.0):
     dependencies:
-      debug: 4.4.0
+      debug: 4.4.0(supports-color@7.2.0)
       multicast-dns: 7.2.5
     transitivePeerDependencies:
       - supports-color
     optional: true
 
-  werift-rtp@0.8.9:
+  werift-rtp@0.8.9(supports-color@7.2.0):
     dependencies:
       buffer: 6.0.3
-      debug: 4.4.0
+      debug: 4.4.0(supports-color@7.2.0)
       mediabunny: 1.54.0
     transitivePeerDependencies:
       - supports-color
@@ -2413,7 +2501,7 @@ snapshots:
       '@shinyoshiaki/jspack': 0.0.6
     optional: true
 
-  werift@0.23.0:
+  werift@0.23.0(supports-color@7.2.0):
     dependencies:
       '@fidm/x509': 1.2.1
       '@minhducsun2002/leb128': 1.0.0
@@ -2423,17 +2511,17 @@ snapshots:
       '@shinyoshiaki/jspack': 0.0.6
       aes-js: 3.1.2
       buffer: 6.0.3
-      debug: 4.4.0
+      debug: 4.4.0(supports-color@7.2.0)
       fast-deep-equal: 3.1.3
       int64-buffer: 1.1.0
       ip: 2.0.1
       mp4box: 0.5.4
       multicast-dns: 7.2.5
       tweetnacl: 1.0.3
-      werift-common: 0.0.3
-      werift-dtls: 0.5.8
-      werift-ice: 0.2.3
-      werift-rtp: 0.8.9
+      werift-common: 0.0.3(supports-color@7.2.0)
+      werift-dtls: 0.5.8(supports-color@7.2.0)
+      werift-ice: 0.2.3(supports-color@7.2.0)
+      werift-rtp: 0.8.9(supports-color@7.2.0)
       werift-sctp: 0.0.11
     transitivePeerDependencies:
       - supports-color
