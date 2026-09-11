@@ -11,6 +11,8 @@ import {
   RtpPacketizer,
   type Track,
   Video,
+  VP8RtpPacketizer,
+  VP9RtpPacketizer,
 } from "@lng2004/node-datachannel";
 import { Codec, MediaType } from "@snazzah/davey";
 import { normalizeVideoCodec, type SupportedVideoCodec } from "../../utils.js";
@@ -203,6 +205,12 @@ export class WebRtcConnWrapper {
           "StartSequence",
           rtpConfigVideo,
         );
+        break;
+      case "VP8":
+        this._videoPacketizer = new VP8RtpPacketizer(rtpConfigVideo);
+        break;
+      case "VP9":
+        this._videoPacketizer = new VP9RtpPacketizer(rtpConfigVideo);
         break;
       case "AV1":
         this._videoPacketizer = new AV1RtpPacketizer("Obu", rtpConfigVideo);
