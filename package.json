@@ -1,6 +1,6 @@
 {
     "name": "@dank074/discord-video-stream",
-    "version": "6.0.0",
+    "version": "7.0.0",
     "description": "Experiment for making video streaming work for discord selfbots",
     "exports": "./dist/index.js",
     "types": "dist/index.d.ts",
