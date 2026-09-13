@@ -69,11 +69,11 @@ For full functionality, this library requires an FFmpeg build with `libzmq` enab
 
 ## Usage
 
-Install the package, alongside its peer-dependency discord.js-selfbot-v13:
+Install the package, alongside its peer-dependency @lng2004/discord.js-selfbot-v13:
 
 ```
 npm install @dank074/discord-video-stream@latest
-npm install discord.js-selfbot-v13@latest
+npm install @lng2004/discord.js-selfbot-v13@latest
 ```
 
 > [!IMPORTANT]
@@ -82,7 +82,7 @@ npm install discord.js-selfbot-v13@latest
 Create a new Streamer, and pass it a selfbot Client
 
 ```typescript
-import { Client } from "discord.js-selfbot-v13";
+import { Client } from "@lng2004/discord.js-selfbot-v13";
 import { Streamer } from '@dank074/discord-video-stream';
 
 const streamer = new Streamer(new Client());
