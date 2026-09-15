@@ -10,6 +10,10 @@ import {
   type Stream,
 } from "node-av";
 import pDebounce from "p-debounce";
+import {
+  H264NalUnitTypes,
+  H265NalUnitTypes,
+} from "../client/processing/AnnexBHelper.js";
 import { AVCodecID } from "./LibavCodecId.js";
 
 type MediaStreamInfoCommon = {
@@ -147,25 +151,27 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
       switch (codecId) {
         case AVCodecID.AV_CODEC_ID_H264:
           vbsf.push(BitStreamFilterAPI.create("h264_mp4toannexb", vStream));
+          // filter_units only inspects NAL headers (no CBS RBSP parsing),
+          // so AUD removal stays tolerant of malformed filler.
           vbsf.push(
-            BitStreamFilterAPI.create("h264_metadata", vStream, {
+            BitStreamFilterAPI.create("filter_units", vbsf.at(-1)!, {
               options: {
-                aud: "remove",
+                remove_types: String(H264NalUnitTypes.AccessUnitDelimiter),
               },
             }),
           );
-          vbsf.push(BitStreamFilterAPI.create("dump_extra", vStream));
+          vbsf.push(BitStreamFilterAPI.create("dump_extra", vbsf.at(-1)!));
           break;
         case AVCodecID.AV_CODEC_ID_HEVC:
           vbsf.push(BitStreamFilterAPI.create("hevc_mp4toannexb", vStream));
           vbsf.push(
-            BitStreamFilterAPI.create("hevc_metadata", vStream, {
+            BitStreamFilterAPI.create("filter_units", vbsf.at(-1)!, {
               options: {
-                aud: "remove",
+                remove_types: String(H265NalUnitTypes.AUD_NUT),
               },
             }),
           );
-          vbsf.push(BitStreamFilterAPI.create("dump_extra", vStream));
+          vbsf.push(BitStreamFilterAPI.create("dump_extra", vbsf.at(-1)!));
           break;
         default:
           vbsf.push(BitStreamFilterAPI.create("null", vStream));
@@ -225,9 +231,9 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
   ) => {
     let packets = [input];
     for (const filter of filters) {
-      let newPackets: (Packet | null)[] = [];
+      const newPackets: (Packet | null)[] = [];
       for (const packet of packets) {
-        newPackets = [...newPackets, ...(await filter.filterAll(packet))];
+        newPackets.push(...(await filter.filterAll(packet)));
         packet?.free();
       }
       if (!input) newPackets.push(null);
