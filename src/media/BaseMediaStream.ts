@@ -6,10 +6,56 @@ import type { Packet } from "node-av";
 export type BaseMediaStreamOptions = {
   noSleep?: boolean;
   livestreamCatchup?: boolean;
+  /**
+   * Backlog size (in frames) that triggers livestream catchup. Calibrated
+   * at 30fps: the effective threshold scales with the measured frame rate
+   * so it always represents the same media-time depth (~333ms by default).
+   */
   catchupQueueThreshold?: number;
+  /**
+   * Catchup aggressiveness: each reference-interval (~33ms) of backlog
+   * above the threshold adds roughly (1 - speedupFactor) speedup, so the
+   * default 0.9 still nudges gently (~10%) on a one-frame excess but
+   * reaches near-flat-out fast-forward once a few hundred ms pile up.
+   * Explicitly set 0.97 for the older shallower ramp.
+   */
   catchupSpeedupFactor?: number;
+  /**
+   * Floor for the catchup sleep multiplier, i.e. `1 - catchupMinFactor` is
+   * the maximum speedup applied to deep backlogs. Lower = faster
+   * fast-forward on multi-second gaps (never drops frames). Default 0.2
+   * allows up to ~5x drain with minimum gaps (~7ms video / ~4ms audio)
+   * that the event loop and the downstream RTP pacer sustain —
+   * deliberately not flat-out: 1ms-gap micro-bursts cost more in loop /
+   * pacer queueing delay than they save. Ramp stays proportional, so
+   * small backlogs still converge gently. Set 0.85 for a 15% ceiling.
+   */
   catchupMinFactor?: number;
 };
+
+// Reference frame interval (~33ms @ 30fps) for catchup tuning.
+const CATCHUP_REF_FRAMETIME_MS = 1000 / 30;
+
+// Defaults for catchup tuning — field initializers and constructor fallbacks.
+// Invalid values are rejected by the validating setters (RangeError).
+const DEFAULT_CATCHUP = {
+  queueThreshold: 10,
+  speedupFactor: 0.9,
+  minFactor: 0.2,
+};
+
+// Per-frame warp for small A/V errors. Small steps converge smoothly;
+// large behind-errors compress progressively (see below) so seconds-scale
+// gaps converge fast without dropping frames.
+const SYNC_MAX_WARP_FRACTION = 0.3;
+// Hard cap on a single sync stretch — large jumps are discontinuities
+// (seek/loop) and handled by rebasing, not waiting.
+const SYNC_MAX_STRETCH_MS = 100;
+
+// Learned setTimeout bias, subtracted from next sleep so sends land
+// centered on the deadline. Clamped: removes average bias only, never
+// hurries a frame.
+const TIMER_BIAS_MAX_MS = 3;
 
 export class BaseMediaStream extends Writable {
   private _pts?: number;
@@ -19,16 +65,30 @@ export class BaseMediaStream extends Writable {
   private _loggerSleep: Log;
 
   private _noSleep: boolean;
-  private _startTime?: number;
-  private _startPts?: number;
   private _sync = true;
   private _syncStream?: BaseMediaStream;
   private _frameSendDeadlineExceededCount = 0;
 
+  // PTS-anchored timeline: deadline(frame) = t0 + (pts - p0), absolute
+  // per frame — a late timer never shifts the next deadline, so pacing
+  // errors stay bounded. Each stream owns its anchor; a late-joining
+  // stream aligns to the partner's anchor, and the sync trim absorbs
+  // any residual skew.
+  private _t0?: number;
+  private _p0?: number;
+
   private _livestreamCatchup = false;
-  private _catchupQueueThreshold = 10;
-  private _catchupSpeedupFactor = 0.95;
-  private _catchupMinFactor = 0.5;
+  private _catchupQueueThreshold: number = DEFAULT_CATCHUP.queueThreshold;
+  private _catchupSpeedupFactor: number = DEFAULT_CATCHUP.speedupFactor;
+  private _catchupMinFactor: number = DEFAULT_CATCHUP.minFactor;
+  // Smoothed frame interval (ms), seeded ~33ms so call sites never deal
+  // with undefined. Survives resetTimingState; adapts within a few frames
+  // if content changes.
+  private _avgFrametime: number = CATCHUP_REF_FRAMETIME_MS;
+  // EMAs of send cost and timer overshoot, used to center sends on the
+  // deadline without extra wakeups.
+  private _sendEmaMs = 0;
+  private _timerBiasEmaMs = 0;
 
   constructor(type: string, options: BaseMediaStreamOptions = {}) {
     super({ objectMode: true, highWaterMark: 32 });
@@ -38,9 +98,9 @@ export class BaseMediaStream extends Writable {
     const {
       noSleep = false,
       livestreamCatchup = false,
-      catchupQueueThreshold = 10,
-      catchupSpeedupFactor = 0.95,
-      catchupMinFactor = 0.5,
+      catchupQueueThreshold = DEFAULT_CATCHUP.queueThreshold,
+      catchupSpeedupFactor = DEFAULT_CATCHUP.speedupFactor,
+      catchupMinFactor = DEFAULT_CATCHUP.minFactor,
     } = options;
     this._noSleep = noSleep;
     this._livestreamCatchup = livestreamCatchup;
@@ -70,7 +130,7 @@ export class BaseMediaStream extends Writable {
   }
   set noSleep(val: boolean) {
     this._noSleep = val;
-    if (!val) this.resetTimingCompensation();
+    if (!val) this.resetTimingState();
   }
   get pts(): number | undefined {
     return this._pts;
@@ -79,7 +139,10 @@ export class BaseMediaStream extends Writable {
     return this._syncTolerance;
   }
   set syncTolerance(n: number) {
-    if (n < 0) return;
+    if (!Number.isFinite(n) || n < 0)
+      throw new RangeError(
+        `syncTolerance must be a finite number >= 0, got ${n}`,
+      );
     this._syncTolerance = n;
   }
   get livestreamCatchup(): boolean {
@@ -88,75 +151,68 @@ export class BaseMediaStream extends Writable {
   set livestreamCatchup(val: boolean) {
     this._livestreamCatchup = val;
   }
-  /**
-   * Number of buffered frames (including the frame currently being sent)
-   * above which catchup pacing kicks in. See `livestreamCatchup`.
-   */
   get catchupQueueThreshold(): number {
     return this._catchupQueueThreshold;
   }
   set catchupQueueThreshold(n: number) {
-    if (!Number.isFinite(n) || n < 0) return;
+    if (!Number.isFinite(n) || n < 0)
+      throw new RangeError(
+        `catchupQueueThreshold must be a finite number >= 0, got ${n}`,
+      );
     this._catchupQueueThreshold = Math.floor(n);
   }
-  /**
-   * Base multiplier applied to the computed sleep time while catching up.
-   * Must be in the exclusive range (0, 1). Smaller values catch up faster
-   * but cause more noticeable pacing changes. Defaults to 0.95 (5% faster).
-   *
-   * The effective multiplier scales with the backlog depth: each frame
-   * buffered beyond `catchupQueueThreshold` compounds the speedup, down to
-   * `catchupMinFactor`.
-   */
   get catchupSpeedupFactor(): number {
     return this._catchupSpeedupFactor;
   }
   set catchupSpeedupFactor(n: number) {
-    if (!Number.isFinite(n) || n <= 0 || n >= 1) return;
+    if (!Number.isFinite(n) || n <= 0 || n >= 1)
+      throw new RangeError(
+        `catchupSpeedupFactor must be a finite number in (0, 1), got ${n}`,
+      );
     this._catchupSpeedupFactor = n;
   }
-  /**
-   * Lower bound for the effective catchup multiplier. Must be in the
-   * exclusive range (0, 1). Caps how aggressive catchup can get no matter
-   * how deep the backlog is. Defaults to 0.5 (up to 2x faster).
-   */
   get catchupMinFactor(): number {
     return this._catchupMinFactor;
   }
   set catchupMinFactor(n: number) {
-    if (!Number.isFinite(n) || n <= 0 || n >= 1) return;
+    if (!Number.isFinite(n) || n <= 0 || n >= 1)
+      throw new RangeError(
+        `catchupMinFactor must be a finite number in (0, 1), got ${n}`,
+      );
     this._catchupMinFactor = n;
   }
   protected async _sendFrame(
-    _frame: Buffer,
-    _frametime: number,
+    frame: Buffer,
+    frametime: number,
   ): Promise<void> {
     throw new Error("Not implemented");
   }
-  private get ptsDelta() {
-    if (this.pts !== undefined && this.syncStream?.pts !== undefined)
-      return this.pts - this.syncStream.pts;
-    return undefined;
+  // Threshold in media-time ms (frame-count × reference interval).
+  private get _catchupThresholdMs(): number {
+    return this._catchupQueueThreshold * CATCHUP_REF_FRAMETIME_MS;
   }
-  private get isAhead() {
-    const delta = this.ptsDelta;
-    return (
-      this.syncStream?.writableEnded === false &&
-      delta !== undefined &&
-      delta > this.syncTolerance
-    );
+  // P-controller gain: speedup per ms of excess backlog.
+  private get _catchupGainPerMs(): number {
+    return (1 - this._catchupSpeedupFactor) / CATCHUP_REF_FRAMETIME_MS;
   }
-  private get isBehind() {
-    const delta = this.ptsDelta;
-    return (
-      this.syncStream?.writableEnded === false &&
-      delta !== undefined &&
-      delta < -this.syncTolerance
-    );
+  private resetTimingState() {
+    this._t0 = undefined;
+    this._p0 = undefined;
+    this._pts = undefined;
   }
-  private resetTimingCompensation() {
-    this._startTime = this._startPts = undefined;
+
+  // A/V sync error: this stream's media elapsed minus partner's last
+  // sent elapsed. undefined when not applicable.
+  private _syncErrorMs(ownPtsMs: number): number | undefined {
+    const other = this._syncStream;
+    if (!this._sync || other === undefined || other.writableEnded)
+      return undefined;
+    if (this._p0 === undefined || other._p0 === undefined) return undefined;
+    if (other._pts === undefined || !Number.isFinite(other._pts))
+      return undefined;
+    return ownPtsMs - this._p0 - (other._pts - other._p0);
   }
+
   async _write(
     frame: Packet,
     _: BufferEncoding,
@@ -170,136 +226,212 @@ export class BaseMediaStream extends Writable {
     }
 
     const frametime = (Number(duration) / timeBase.den) * timeBase.num * 1000;
-
-    const start_sendFrame = performance.now();
-    await this._sendFrame(Buffer.from(data), frametime);
-    const end_sendFrame = performance.now();
-
-    this._pts = (Number(pts) / timeBase.den) * timeBase.num * 1000;
-    this.emit("pts", this._pts);
-
-    const sendTime = end_sendFrame - start_sendFrame;
-    const ratio = sendTime / frametime;
-    this._loggerSend.trace(
-      {
-        stats: {
-          pts: this._pts,
-          frame_size: data.length,
-          duration: sendTime,
-          frametime,
-        },
-      },
-      `Frame sent in ${sendTime.toFixed(2)}ms (${(ratio * 100).toFixed(2)}% frametime)`,
-    );
-    if (ratio > 1) {
-      this._frameSendDeadlineExceededCount++;
-      if (this._frameSendDeadlineExceededCount > 10)
-        this._loggerSend.warn(
-          {
-            frame_size: data.length,
-            duration: sendTime,
-            frametime,
-          },
-          `Frame takes too long to send (${(ratio * 100).toFixed(2)}% frametime)`,
-        );
-    } else {
-      this._frameSendDeadlineExceededCount = 0;
+    const frameSize = data.length;
+    if (Number.isFinite(frametime) && frametime > 0) {
+      this._avgFrametime += 0.15 * (frametime - this._avgFrametime);
     }
+    const ptsMs = (Number(pts) / timeBase.den) * timeBase.num * 1000;
+    const timingValid =
+      Number.isFinite(ptsMs) && Number.isFinite(frametime) && frametime > 0;
 
-    this._startTime ??= start_sendFrame;
-    this._startPts ??= this._pts;
-    const sleep = Math.max(
-      0,
-      this._pts -
-        this._startPts +
-        frametime -
-        (end_sendFrame - this._startTime),
-    );
-    if (this._noSleep || sleep === 0) {
-      callback(null);
-    } else if (this.sync && this.isBehind) {
-      this._loggerSync.debug(
-        {
-          stats: {
-            pts: this.pts,
-            pts_other: this.syncStream?.pts,
-          },
-        },
-        "Stream is behind. Not sleeping for this frame",
+    // Copy out and release native memory before pacing: a frame can be
+    // held for a full frametime before it is sent.
+    const buf = Buffer.from(data);
+    frame.free();
+
+    // Send, then publish PTS for partner sync and listeners. Untimed
+    // frames are sent but never published: garbage PTS would corrupt the
+    // sync timeline.
+    const sendAndPublish = async () => {
+      const sendStart = performance.now();
+      // Always the nominal frametime — pacing warp must never leak
+      // into RTP timestamps.
+      await this._sendFrame(buf, frametime);
+      const sendTime = performance.now() - sendStart;
+      // Clamp top so one slow frame can't bias pacing for long.
+      this._sendEmaMs = Math.min(
+        this._sendEmaMs + 0.1 * (sendTime - this._sendEmaMs),
+        5,
       );
-      this.resetTimingCompensation();
-      callback(null);
-    } else if (this.sync && this.isAhead) {
-      do {
-        this._loggerSync.debug(
-          {
-            stats: {
-              pts: this.pts,
-              pts_other: this.syncStream?.pts,
+      if (timingValid && sendTime > frametime) {
+        this._frameSendDeadlineExceededCount++;
+        if (this._frameSendDeadlineExceededCount > 10) {
+          this._loggerSend.warn(
+            {
+              frame_size: frameSize,
+              duration: sendTime,
               frametime,
             },
-          },
-          `Stream is ahead. Waiting for ${frametime}ms`,
-        );
-        await setTimeout(frametime);
-      } while (this.sync && this.isAhead);
-      this.resetTimingCompensation();
-      callback(null);
-    } else {
-      let effectiveSleep = sleep;
-      if (this._livestreamCatchup && sleep > 0) {
-        const queueLength = this.writableLength;
-        const excess = queueLength - this._catchupQueueThreshold;
-        if (excess > 0) {
-          // Scale the speedup with the backlog depth: each frame buffered
-          // beyond the threshold compounds the base factor, so a deep
-          // backlog catches up much faster than a shallow one. The
-          // effective multiplier is floored at catchupMinFactor.
-          const factor = Math.max(
-            this._catchupMinFactor,
-            this._catchupSpeedupFactor ** excess,
+            `Frame takes too long to send (${((sendTime / frametime) * 100).toFixed(2)}% frametime)`,
           );
-          const adjusted = Math.max(0, sleep * factor);
-          const saved = sleep - adjusted;
-          if (saved > 0) {
-            // Shift the pacing anchor backwards so the time saved is not
-            // given back on the next frame. This makes frame pacing run
-            // slightly faster than realtime until the queue drains.
-            if (this._startTime !== undefined) this._startTime -= saved;
-            this._loggerSleep.debug(
-              {
-                stats: {
-                  pts: this._pts,
-                  queueLength,
-                  excess,
-                  factor,
-                  sleep,
-                  effectiveSleep: adjusted,
-                  saved,
-                },
-              },
-              `Livestream catchup: queue backed up (${queueLength} frames). Sleeping for ${adjusted.toFixed(2)}ms instead of ${sleep.toFixed(2)}ms`,
-            );
-          }
-          effectiveSleep = adjusted;
         }
+      } else {
+        this._frameSendDeadlineExceededCount = 0;
       }
+      if (timingValid) {
+        this._pts = ptsMs;
+        this.emit("pts", ptsMs);
+      }
+    };
+
+    if (this._noSleep || !timingValid) {
+      // Burst mode (or untimed frame): drain ASAP.
+      await sendAndPublish();
+      callback(null);
+      return;
+    }
+
+    const now0 = performance.now();
+
+    // First frame or PTS discontinuity (seek/loop/wrap): rebase and
+    // send immediately. Never rebase on mere lateness.
+    if (this._t0 === undefined || this._p0 === undefined) {
+      // Late joiner: the partner is already running, so align this
+      // stream's origin to the partner's anchor instead of the epoch —
+      // otherwise every frame would start minutes late. The partner's
+      // anchor is untouched.
+      const anchor = this._syncStream?._t0;
+      this._t0 = now0;
+      this._p0 = anchor === undefined ? ptsMs : ptsMs - (now0 - anchor);
+      await sendAndPublish();
+      callback(null);
+      return;
+    }
+    const lastPts = this._pts;
+    const avg = this._avgFrametime;
+    const jumpLimit = Math.max(1000, avg * 10);
+    if (
+      lastPts !== undefined &&
+      (ptsMs < lastPts || ptsMs - lastPts > jumpLimit)
+    ) {
+      this._loggerSync.debug(
+        { stats: { pts: ptsMs, lastPts, jumpLimit } },
+        "PTS discontinuity. Rebasing presentation timeline",
+      );
+      this._p0 = ptsMs;
+      this._t0 = now0;
+      await sendAndPublish();
+      callback(null);
+      return;
+    }
+
+    // --- Nominal deadline ---
+    const nominal = this._t0 + (ptsMs - this._p0);
+    const sleep = nominal - now0 - this._sendEmaMs - this._timerBiasEmaMs;
+
+    // --- A/V sync trim ---
+    // Ahead → stretch (slow down), capped so a far-ahead stream never
+    // parks. Behind → compress (hurry) progressively, ~25% of error per
+    // frame — fast convergence without skipping, preserving the
+    // inter-frame reference chain.
+    let syncTrim = 0;
+    const syncError = this._syncErrorMs(ptsMs);
+    if (syncError !== undefined && Math.abs(syncError) > this._syncTolerance) {
+      if (syncError > 0) {
+        const cap = SYNC_MAX_WARP_FRACTION * frametime;
+        syncTrim = Math.min(
+          syncError - this._syncTolerance,
+          cap,
+          SYNC_MAX_STRETCH_MS,
+        );
+      } else {
+        const behindExcess = -(syncError + this._syncTolerance);
+        const want = Math.max(
+          behindExcess * 0.25,
+          SYNC_MAX_WARP_FRACTION * frametime,
+        );
+        // Ceil at 75% of sleep: non-negative wait, max ~4x fast-forward
+        // per frame. When already late (sleep <= 0), compress = 0.
+        const maxCompress = sleep > 0 ? 0.75 * sleep : 0;
+        syncTrim = -Math.min(behindExcess, want, maxCompress);
+      }
+    }
+
+    // --- Livestream catchup trim: queue-depth P-controller ---
+    // backlogMs is media-time so audio (20ms) and video (33ms) behave
+    // identically. No accumulation — nominal deadline is absolute.
+    let catchupSaving = 0;
+    if (this._livestreamCatchup && sleep > 0) {
+      const backlogMs = this.writableLength * avg;
+      const excess = backlogMs - this._catchupThresholdMs;
+      if (excess > 0) {
+        const u = Math.min(
+          1 - this._catchupMinFactor,
+          excess * this._catchupGainPerMs,
+        );
+        if (u > 0) catchupSaving = sleep * u;
+      }
+    }
+
+    // Suppress stretch when there's backlog to drain or lateness to
+    // absorb — draining beats aligning.
+    if (syncTrim > 0 && (catchupSaving > 0 || sleep - catchupSaving <= 0)) {
+      syncTrim = 0;
+    }
+
+    const target =
+      nominal -
+      this._sendEmaMs -
+      this._timerBiasEmaMs +
+      syncTrim -
+      catchupSaving;
+
+    if (this._loggerSleep.enabled.trace) {
       this._loggerSleep.trace(
         {
           stats: {
-            pts: this._pts,
-            startPts: this._startPts,
-            time: end_sendFrame,
-            startTime: this._startTime,
+            pts: ptsMs,
+            nominal,
+            sleep,
+            syncError,
+            syncTrim,
+            catchupSaving,
+            target,
             frametime,
           },
         },
-        `Sleeping for ${effectiveSleep}ms`,
+        `Sleeping for ${Math.max(0, target - now0).toFixed(2)}ms`,
       );
-      setTimeout(effectiveSleep).then(() => callback(null));
+    } else if (this._loggerSync.enabled.debug && syncTrim !== 0) {
+      this._loggerSync.debug(
+        { stats: { pts: ptsMs, syncError, syncTrim, frametime } },
+        syncTrim > 0
+          ? "Stream is ahead. Stretching sleep for this frame"
+          : "Stream is behind. Compressing sleep for this frame",
+      );
+    } else if (this._loggerSleep.enabled.debug && catchupSaving > 0) {
+      this._loggerSleep.debug(
+        {
+          stats: {
+            pts: ptsMs,
+            queueLength: this.writableLength,
+            backlogMs: this.writableLength * avg,
+            frametime,
+            sleep,
+            catchupSaving,
+          },
+        },
+        `Livestream catchup: queue backed up. Sleeping for ${(sleep - catchupSaving).toFixed(2)}ms instead of ${sleep.toFixed(2)}ms`,
+      );
     }
-    frame.free();
+
+    // One timer per frame. Late frames send immediately; PTS-absolute
+    // deadline keeps lateness bounded per frame.
+    const wait = target - performance.now();
+    if (wait > 0) {
+      await setTimeout(wait);
+      const late = performance.now() - target;
+      const sample = Math.min(Math.max(late, 0), 10);
+      this._timerBiasEmaMs = Math.min(
+        this._timerBiasEmaMs + 0.1 * (sample - this._timerBiasEmaMs),
+        TIMER_BIAS_MAX_MS,
+      );
+    }
+
+    await sendAndPublish();
+    callback(null);
   }
+
   _destroy(
     error: Error | null,
     callback: (error?: Error | null) => void,
