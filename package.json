@@ -19,8 +19,7 @@
         "fluent-ffmpeg-simplified": "^0.1.0",
         "node-av": "^6.1.1",
         "p-debounce": "^5.1.0",
-        "sharp": "^0.35.3",
-        "zeromq": "^6.5.0"
+        "sharp": "^0.35.3"
     },
     "devDependencies": {
         "@biomejs/biome": "2.5.5",

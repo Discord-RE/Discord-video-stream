@@ -61,11 +61,11 @@ Extensions supported by Discord (taken from the webrtc sdp exchange)
 
 ## Requirements
 
-For full functionality, this library requires an FFmpeg build with `libzmq` enabled. Here is our recommendation:
+This library requires FFmpeg to be installed and available in your `PATH`. Any recent static build works, for example:
 
 - Windows & Linux: [BtbN's FFmpeg Builds](https://github.com/BtbN/FFmpeg-Builds)
 - macOS (Intel): [evermeet.cx](https://evermeet.cx/ffmpeg/)
-- macOS (Apple Silicon): Install from Homebrew
+- macOS (Apple Silicon): [ffmpeg.martin-riedl.de](https://ffmpeg.martin-riedl.de/)
 
 ## Usage
 

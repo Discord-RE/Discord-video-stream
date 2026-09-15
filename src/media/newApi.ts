@@ -4,11 +4,10 @@ import { FFmpegCommand } from "fluent-ffmpeg-simplified";
 import { AV_PKT_FLAG_KEY, type Packet } from "node-av";
 import pDebounce from "p-debounce";
 import sharp from "sharp";
-import type { Request } from "zeromq";
 import type { Streamer } from "../client/index.js";
 import type { WebRtcConnWrapper } from "../client/voice/WebRtcWrapper.js";
 import type { SupportedVideoCodec } from "../utils.js";
-import { isBun, isDeno, isFiniteNonZero } from "../utils.js";
+import { isFiniteNonZero } from "../utils.js";
 import { AudioStream } from "./AudioStream.js";
 import type { EncoderSettingsGetter } from "./encoders/index.js";
 import { Encoders } from "./encoders/index.js";
@@ -236,7 +235,13 @@ export function prepareStream(
     loggerFFmpeg.debug(line);
   });
   command.input(input);
-  command.inputOptions("-y", "-loglevel", mergedOptions.logLevel, "-nostats");
+  command.inputOptions(
+    "-y",
+    "-loglevel",
+    mergedOptions.logLevel,
+    "-nostats",
+    "-stdin",
+  );
 
   // input options
   if (
@@ -355,32 +360,13 @@ export function prepareStream(
     command.outputOptions(mergedOptions.customFfmpegFlags);
   }
 
-  // realtime control mechanism
+  // realtime volume control via ffmpeg's interactive mode (stdin)
+  // ffmpeg reads single-key commands from stdin unless `-nostdin` is given.
+  // Pressing `c` lets us send a command to a filter:
+  //   <target> <time>|-1 <command>[ <argument>]
+  // e.g. `cvolume@internal_lib -1 volume 0.5\n` sets the `volume` filter
+  // named `internal_lib` to 0.5. No extra dependencies (e.g. libzmq) needed.
   let currentVolume = 1;
-  let zmqClientPromise: Promise<Request> | undefined;
-  if (includeAudio && !isBun() && !isDeno()) {
-    function randomInclusive(start: number, end: number) {
-      return Math.floor(Math.random() * (end - start + 1)) + start;
-    }
-    // Last octet is from 2 to 254 to avoid WSL2 shenanigans
-    const loopbackIp = [
-      127,
-      randomInclusive(0, 255),
-      randomInclusive(0, 255),
-      randomInclusive(2, 254),
-    ].join(".");
-    const zmqEndpoint = `tcp://${loopbackIp}:42069`;
-    command.audioFilters(`azmq=b=${zmqEndpoint.replaceAll(":", "\\\\:")}`);
-    zmqClientPromise = import("zeromq").then((zmq) => {
-      const client = new zmq.Request({
-        sendTimeout: 5000,
-        receiveTimeout: 5000,
-      });
-      client.connect(zmqEndpoint);
-      promise.catch(() => {}).finally(() => client.disconnect(zmqEndpoint));
-      return client;
-    });
-  }
 
   command.once("start", (cmdline) => {
     logger.debug(`Starting ffmpeg: ${cmdline}`);
@@ -396,13 +382,19 @@ export function prepareStream(
         return currentVolume;
       },
       async setVolume(newVolume: number) {
-        if (newVolume < 0) return false;
+        if (!Number.isFinite(newVolume) || newVolume < 0) return false;
+        if (!includeAudio) return false;
         try {
-          if (!zmqClientPromise) return false;
-          const client = await zmqClientPromise;
-          await client.send(`volume@internal_lib volume ${newVolume}`);
-          const [res] = await client.receive();
-          if (res.toString("utf-8").split(" ")[0] !== "0") return false;
+          const stdin = promise.stdin;
+          if (!stdin || stdin.destroyed || stdin.closed) return false;
+          // `c` = send command to first matching filter, then
+          // `<target> <time>|-1 <command>[ <argument>]\n`.
+          // Must be a single write with no newline after `c`, otherwise
+          // ffmpeg sees an empty command and reports a parse error.
+          const cmd = `cvolume@internal_lib -1 volume ${newVolume}\n`;
+          await new Promise<void>((resolve, reject) => {
+            stdin.write(cmd, (err) => (err ? reject(err) : resolve()));
+          });
           currentVolume = newVolume;
           return true;
         } catch {
