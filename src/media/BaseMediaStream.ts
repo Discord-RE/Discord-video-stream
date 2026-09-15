@@ -160,7 +160,7 @@ export class BaseMediaStream extends Writable {
 
     const sendTime = end_sendFrame - start_sendFrame;
     const ratio = sendTime / frametime;
-    this._loggerSend.debug(
+    this._loggerSend.trace(
       {
         stats: {
           pts: this._pts,
@@ -253,7 +253,7 @@ export class BaseMediaStream extends Writable {
           effectiveSleep = adjusted;
         }
       }
-      this._loggerSleep.debug(
+      this._loggerSleep.trace(
         {
           stats: {
             pts: this._pts,
