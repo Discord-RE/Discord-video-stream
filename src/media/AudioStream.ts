@@ -1,5 +1,8 @@
 import type { WebRtcConnWrapper } from "../client/voice/WebRtcWrapper.js";
-import { BaseMediaStream, type BaseMediaStreamOptions } from "./BaseMediaStream.js";
+import {
+  BaseMediaStream,
+  type BaseMediaStreamOptions,
+} from "./BaseMediaStream.js";
 
 export class AudioStream extends BaseMediaStream {
   private _conn: WebRtcConnWrapper;
