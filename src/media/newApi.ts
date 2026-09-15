@@ -508,7 +508,8 @@ export async function playStream(
           ? opts.readrateInitialBurst
           : defaultOptions.readrateInitialBurst,
 
-      livestreamCatchup: opts.livestreamCatchup ?? defaultOptions.livestreamCatchup,
+      livestreamCatchup:
+        opts.livestreamCatchup ?? defaultOptions.livestreamCatchup,
 
       streamPreview: opts.streamPreview ?? defaultOptions.streamPreview,
     } satisfies PlayStreamOptions;
