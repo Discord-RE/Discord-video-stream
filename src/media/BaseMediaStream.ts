@@ -8,6 +8,7 @@ export type BaseMediaStreamOptions = {
   livestreamCatchup?: boolean;
   catchupQueueThreshold?: number;
   catchupSpeedupFactor?: number;
+  catchupMinFactor?: number;
 };
 
 export class BaseMediaStream extends Writable {
@@ -27,6 +28,7 @@ export class BaseMediaStream extends Writable {
   private _livestreamCatchup = false;
   private _catchupQueueThreshold = 10;
   private _catchupSpeedupFactor = 0.95;
+  private _catchupMinFactor = 0.5;
 
   constructor(type: string, options: BaseMediaStreamOptions = {}) {
     super({ objectMode: true, highWaterMark: 32 });
@@ -38,11 +40,13 @@ export class BaseMediaStream extends Writable {
       livestreamCatchup = false,
       catchupQueueThreshold = 10,
       catchupSpeedupFactor = 0.95,
+      catchupMinFactor = 0.5,
     } = options;
     this._noSleep = noSleep;
     this._livestreamCatchup = livestreamCatchup;
     this.catchupQueueThreshold = catchupQueueThreshold;
     this.catchupSpeedupFactor = catchupSpeedupFactor;
+    this.catchupMinFactor = catchupMinFactor;
   }
 
   get sync(): boolean {
@@ -96,9 +100,13 @@ export class BaseMediaStream extends Writable {
     this._catchupQueueThreshold = Math.floor(n);
   }
   /**
-   * Multiplier applied to the computed sleep time while catching up.
+   * Base multiplier applied to the computed sleep time while catching up.
    * Must be in the exclusive range (0, 1). Smaller values catch up faster
    * but cause more noticeable pacing changes. Defaults to 0.95 (5% faster).
+   *
+   * The effective multiplier scales with the backlog depth: each frame
+   * buffered beyond `catchupQueueThreshold` compounds the speedup, down to
+   * `catchupMinFactor`.
    */
   get catchupSpeedupFactor(): number {
     return this._catchupSpeedupFactor;
@@ -106,6 +114,18 @@ export class BaseMediaStream extends Writable {
   set catchupSpeedupFactor(n: number) {
     if (!Number.isFinite(n) || n <= 0 || n >= 1) return;
     this._catchupSpeedupFactor = n;
+  }
+  /**
+   * Lower bound for the effective catchup multiplier. Must be in the
+   * exclusive range (0, 1). Caps how aggressive catchup can get no matter
+   * how deep the backlog is. Defaults to 0.5 (up to 2x faster).
+   */
+  get catchupMinFactor(): number {
+    return this._catchupMinFactor;
+  }
+  set catchupMinFactor(n: number) {
+    if (!Number.isFinite(n) || n <= 0 || n >= 1) return;
+    this._catchupMinFactor = n;
   }
   protected async _sendFrame(
     _frame: Buffer,
@@ -229,8 +249,17 @@ export class BaseMediaStream extends Writable {
       let effectiveSleep = sleep;
       if (this._livestreamCatchup && sleep > 0) {
         const queueLength = this.writableLength;
-        if (queueLength > this._catchupQueueThreshold) {
-          const adjusted = Math.max(0, sleep * this._catchupSpeedupFactor);
+        const excess = queueLength - this._catchupQueueThreshold;
+        if (excess > 0) {
+          // Scale the speedup with the backlog depth: each frame buffered
+          // beyond the threshold compounds the base factor, so a deep
+          // backlog catches up much faster than a shallow one. The
+          // effective multiplier is floored at catchupMinFactor.
+          const factor = Math.max(
+            this._catchupMinFactor,
+            this._catchupSpeedupFactor ** excess,
+          );
+          const adjusted = Math.max(0, sleep * factor);
           const saved = sleep - adjusted;
           if (saved > 0) {
             // Shift the pacing anchor backwards so the time saved is not
@@ -242,6 +271,8 @@ export class BaseMediaStream extends Writable {
                 stats: {
                   pts: this._pts,
                   queueLength,
+                  excess,
+                  factor,
                   sleep,
                   effectiveSleep: adjusted,
                   saved,
