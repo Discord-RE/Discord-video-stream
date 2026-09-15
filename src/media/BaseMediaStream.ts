@@ -29,7 +29,7 @@ export class BaseMediaStream extends Writable {
   private _catchupSpeedupFactor = 0.95;
 
   constructor(type: string, options: BaseMediaStreamOptions = {}) {
-    super({ objectMode: true, highWaterMark: 0 });
+    super({ objectMode: true, highWaterMark: 32 });
     this._loggerSend = new Log(`stream:${type}:send`);
     this._loggerSync = new Log(`stream:${type}:sync`);
     this._loggerSleep = new Log(`stream:${type}:sleep`);
