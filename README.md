@@ -65,7 +65,7 @@ This library requires FFmpeg to be installed and available in your `PATH`. Any r
 
 - Windows & Linux: [BtbN's FFmpeg Builds](https://github.com/BtbN/FFmpeg-Builds)
 - macOS (Intel): [evermeet.cx](https://evermeet.cx/ffmpeg/)
-- macOS (Apple Silicon): Install from Homebrew
+- macOS (Apple Silicon): [ffmpeg.martin-riedl.de](https://ffmpeg.martin-riedl.de/)
 
 ## Usage
 
