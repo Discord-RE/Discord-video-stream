@@ -30,9 +30,9 @@ export class BaseMediaStream extends Writable {
   private _catchupOffset = 0;
 
   private _livestreamCatchup = false;
-  private _catchupQueueThreshold = 10;
-  private _catchupSpeedupFactor = 0.95;
-  private _catchupMinFactor = 0.5;
+  private _catchupQueueThreshold!: number;
+  private _catchupSpeedupFactor!: number;
+  private _catchupMinFactor!: number;
 
   constructor(type: string, options: BaseMediaStreamOptions = {}) {
     super({ objectMode: true, highWaterMark: 32 });
@@ -43,8 +43,8 @@ export class BaseMediaStream extends Writable {
       noSleep = false,
       livestreamCatchup = false,
       catchupQueueThreshold = 10,
-      catchupSpeedupFactor = 0.95,
-      catchupMinFactor = 0.5,
+      catchupSpeedupFactor = 0.97,
+      catchupMinFactor = 0.85,
     } = options;
     this._noSleep = noSleep;
     this._livestreamCatchup = livestreamCatchup;
