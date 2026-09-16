@@ -11,7 +11,11 @@ export type BaseMediaStreamOptions = {
   catchupMinFactor?: number;
 };
 
-const HIGH_PRECISION_THRESHOLD_MS = 2;
+// Width of the final-approach window handled by yield-spinning instead of
+// a timer. A timer wake-up can land several ms late under event-loop load;
+// aiming the coarse timer this far inside the deadline lets the spin phase
+// absorb that latency instead of overshooting the target.
+const SPIN_WINDOW_MS = 2;
 
 export class BaseMediaStream extends Writable {
   private _pts?: number;
@@ -148,17 +152,27 @@ export class BaseMediaStream extends Writable {
     this._catchupOffset = 0;
   }
 
-  private async precisionWait(ms: number): Promise<void> {
-    if (ms <= 0) return;
-    if (ms < HIGH_PRECISION_THRESHOLD_MS) {
-      const deadline = performance.now() + ms;
-      while (performance.now() < deadline) {
-        // Busy-wait: avoids ~1ms jitter from setTimeout resolution
-        // Yields via setImmediate to avoid blocking the event loop
-        await setImmediate();
+  // Sleeps until the wall clock reaches `deadline` (performance.now() base).
+  // Two phases: a single coarse timer wake-up that lands just inside the
+  // spin window, then a bounded setImmediate-yield spin for the final
+  // stretch. This gives sub-millisecond accuracy without a busy-blocked
+  // event loop and without re-arming many timers.
+  private async waitUntil(deadline: number): Promise<void> {
+    for (;;) {
+      const remaining = deadline - performance.now();
+      if (!Number.isFinite(remaining) || remaining <= 0) return;
+      if (remaining <= SPIN_WINDOW_MS) {
+        // Yield-spin: setImmediate turns are sub-millisecond, so this
+        // lands within microseconds of the deadline while still letting
+        // the synced partner stream (and I/O) make progress.
+        do {
+          await setImmediate();
+        } while (performance.now() < deadline);
+        return;
       }
-    } else {
-      await setTimeout(ms);
+      // Coarse phase: re-arm one timer aimed inside the spin window, so
+      // timer latency is absorbed by the spin instead of overshooting.
+      await setTimeout(remaining - SPIN_WINDOW_MS);
     }
   }
 
@@ -175,108 +189,116 @@ export class BaseMediaStream extends Writable {
     }
 
     const frametime = (Number(duration) / timeBase.den) * timeBase.num * 1000;
+    const frameSize = data.length;
 
-    const start = performance.now();
+    const sendStart = performance.now();
     await this._sendFrame(Buffer.from(data), frametime);
-    const afterSend = performance.now();
+    // Release the packet's memory before pacing: a frame can be held for
+    // a full frametime (or much longer while catching up) before callback.
+    frame.free();
 
-    this._pts = (Number(pts) / timeBase.den) * timeBase.num * 1000;
-    this.emit("pts", this._pts);
+    const ptsMs = (Number(pts) / timeBase.den) * timeBase.num * 1000;
+    this._pts = ptsMs;
+    this.emit("pts", ptsMs);
 
-    const sendTime = afterSend - start;
-    const ratio = sendTime / frametime;
-    this._loggerSend.trace(
-      {
-        stats: {
-          pts: this._pts,
-          frame_size: data.length,
-          duration: sendTime,
-          frametime,
-        },
-      },
-      `Frame sent in ${sendTime.toFixed(2)}ms (${(ratio * 100).toFixed(2)}% frametime)`,
-    );
-    if (ratio > 1) {
+    if (this._noSleep) {
+      // Burst mode: drain frames as fast as they arrive. The paced
+      // timeline restarts from scratch when noSleep is turned off
+      // (resetTimingState), so nothing is advanced or repaid here.
+      callback(null);
+      return;
+    }
+
+    const sendTime = performance.now() - sendStart;
+
+    // Send-overrun watchdog: sustained violations mean the frame budget
+    // cannot be met, so the stream will drift behind permanently.
+    if (sendTime > frametime) {
       this._frameSendDeadlineExceededCount++;
-      if (this._frameSendDeadlineExceededCount > 10)
+      if (this._frameSendDeadlineExceededCount > 10) {
         this._loggerSend.warn(
           {
-            frame_size: data.length,
+            frame_size: frameSize,
             duration: sendTime,
             frametime,
           },
-          `Frame takes too long to send (${(ratio * 100).toFixed(2)}% frametime)`,
+          `Frame takes too long to send (${((sendTime / frametime) * 100).toFixed(2)}% frametime)`,
         );
+      }
     } else {
       this._frameSendDeadlineExceededCount = 0;
     }
 
-    // --- Timing ---
-    let streamStart: number;
-    let virtualTime: number;
+    // --- Virtual clock ---
+    // Each frame's deadline is the stream anchor plus accumulated media
+    // time. Anchoring to a single start point (not to the previous send)
+    // means one slow frame cannot shift the whole timeline, and pacing
+    // self-corrects because the remaining wait is recomputed against the
+    // wall clock every frame.
     if (this._streamStartTime === undefined) {
-      streamStart = this._streamStartTime = start;
-      virtualTime = this._virtualTime = frametime;
+      this._streamStartTime = sendStart;
+      this._virtualTime = frametime;
     } else {
-      streamStart = this._streamStartTime;
-      virtualTime = this._virtualTime! + frametime;
-      this._virtualTime = virtualTime;
+      this._virtualTime = this._virtualTime! + frametime;
     }
+    const deadline =
+      this._streamStartTime + this._virtualTime + this._catchupOffset;
+    const sleep = deadline - performance.now();
 
-    // Apply accumulated catchup offset (additive, never mutates the base clock)
-    const effectiveVirtualTime = virtualTime + this._catchupOffset;
-
-    // Deadline = stream start + effective virtual time
-    const frameDeadline = streamStart + effectiveVirtualTime;
-    const now = performance.now();
-    const sleep = Math.max(0, frameDeadline - now);
-
-    // Sync: if behind the partner, skip sleep to catch up
+    // --- A/V sync: behind the partner, skip this frame's sleep ---
     if (this.sync && this.isBehind) {
-      // Forgive the skipped sleep: _virtualTime was already advanced for
-      // this frame, so without this the skipped time would be paid back as
-      // ~2x sleep on the next frame (skip + normal = oscillation).
+      // Forgive the skipped sleep: the virtual clock already advanced for
+      // this frame, so without this the skipped time would be repaid as
+      // extra sleep on the next frame (skip + normal = oscillation).
       this._catchupOffset -= sleep;
-      this._loggerSync.debug(
-        {
-          stats: {
-            pts: this.pts,
-            pts_other: this.syncStream?.pts,
-            frametime,
-            skippedSleep: sleep,
+      if (this._loggerSync.enabled.debug) {
+        this._loggerSync.debug(
+          {
+            stats: {
+              pts: ptsMs,
+              pts_other: this.syncStream?.pts,
+              frametime,
+              skippedSleep: sleep,
+            },
           },
-        },
-        "Stream is behind. Not sleeping for this frame",
-      );
+          "Stream is behind. Not sleeping for this frame",
+        );
+      }
       callback(null);
-      frame.free();
       return;
     }
 
-    // Sync: if ahead of the partner, wait until caught up
+    // --- A/V sync: ahead of the partner, wait for it to catch up ---
     if (this.sync && this.isAhead) {
-      this._loggerSync.debug(
-        {
-          stats: {
-            pts: this.pts,
-            pts_other: this.syncStream?.pts,
-            frametime,
+      if (this._loggerSync.enabled.debug) {
+        this._loggerSync.debug(
+          {
+            stats: {
+              pts: ptsMs,
+              pts_other: this.syncStream?.pts,
+              frametime,
+            },
           },
-        },
-        `Stream is ahead. Waiting for partner to catch up`,
-      );
+          "Stream is ahead. Waiting for partner to catch up",
+        );
+      }
+      // Absorb the whole backlog here in frametime-sized waits instead of
+      // one frametime per piped frame. The loop exits early if the partner
+      // ends or sync is toggled off.
+      const waitStart = performance.now();
+      do {
+        await this.waitUntil(performance.now() + frametime);
+      } while (this.sync && this.isAhead);
       // Forgive the difference between the computed sleep and the actual
-      // wait, for the same reason as the isBehind path above.
-      this._catchupOffset -= sleep - frametime;
-      // Single precision wait instead of a loop — rechecked on next _write
-      await this.precisionWait(frametime);
+      // wait — the wait was intentional slowdown, not debt to repay.
+      this._catchupOffset += performance.now() - waitStart - sleep;
       callback(null);
-      frame.free();
       return;
     }
 
-    // Livestream catchup: reduce sleep when the queue is backed up
+    // --- Livestream catchup: shrink the sleep while the queue is backed up ---
     let effectiveSleep = sleep;
+    let effectiveDeadline = deadline;
     if (this._livestreamCatchup && sleep > 0) {
       const queueLength = this.writableLength;
       const excess = queueLength - this._catchupQueueThreshold;
@@ -285,49 +307,52 @@ export class BaseMediaStream extends Writable {
           this._catchupMinFactor,
           this._catchupSpeedupFactor ** excess,
         );
-        const adjusted = Math.max(0, sleep * factor);
-        const saved = sleep - adjusted;
+        const saved = sleep * (1 - factor);
         if (saved > 0) {
-          // Accumulate offset — the base clock stays untouched
+          // Record the deviation so the base clock stays untouched.
           this._catchupOffset -= saved;
-          this._loggerSleep.debug(
-            {
-              stats: {
-                pts: this._pts,
-                queueLength,
-                excess,
-                factor,
-                frametime,
-                sleep,
-                effectiveSleep: adjusted,
-                saved,
+          effectiveSleep = sleep - saved;
+          effectiveDeadline = deadline - saved;
+          if (this._loggerSleep.enabled.debug) {
+            this._loggerSleep.debug(
+              {
+                stats: {
+                  pts: ptsMs,
+                  queueLength,
+                  excess,
+                  factor,
+                  frametime,
+                  sleep,
+                  effectiveSleep,
+                  saved,
+                },
               },
-            },
-            `Livestream catchup: queue backed up (${queueLength} frames). Sleeping for ${adjusted.toFixed(2)}ms instead of ${sleep.toFixed(2)}ms`,
-          );
+              `Livestream catchup: queue backed up (${queueLength} frames). Sleeping for ${effectiveSleep.toFixed(2)}ms instead of ${sleep.toFixed(2)}ms`,
+            );
+          }
         }
-        effectiveSleep = adjusted;
       }
     }
 
-    this._loggerSleep.trace(
-      {
-        stats: {
-          pts: this._pts,
-          virtualTime: this._virtualTime,
-          catchupOffset: this._catchupOffset,
-          frameDeadline,
-          frametime,
-          sleep,
-          effectiveSleep,
+    if (this._loggerSleep.enabled.trace) {
+      this._loggerSleep.trace(
+        {
+          stats: {
+            pts: ptsMs,
+            virtualTime: this._virtualTime,
+            catchupOffset: this._catchupOffset,
+            deadline,
+            frametime,
+            sleep,
+            effectiveSleep,
+          },
         },
-      },
-      `Sleeping for ${effectiveSleep}ms`,
-    );
+        `Sleeping for ${effectiveSleep}ms`,
+      );
+    }
 
-    await this.precisionWait(effectiveSleep);
+    await this.waitUntil(effectiveDeadline);
     callback(null);
-    frame.free();
   }
 
   _destroy(
