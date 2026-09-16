@@ -1,5 +1,5 @@
 import { Writable } from "node:stream";
-import { setTimeout } from "node:timers/promises";
+import { setTimeout, setImmediate } from "node:timers/promises";
 import { Log } from "debug-level";
 import type { Packet } from "node-av";
 
@@ -152,7 +152,7 @@ export class BaseMediaStream extends Writable {
       while (performance.now() < deadline) {
         // Busy-wait: avoids ~1ms jitter from setTimeout resolution
         // Yields via setImmediate to avoid blocking the event loop
-        await new Promise<void>((r) => setImmediate(r));
+        await setImmediate();
       }
     } else {
       await setTimeout(ms);
