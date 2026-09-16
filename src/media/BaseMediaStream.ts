@@ -1,5 +1,5 @@
 import { Writable } from "node:stream";
-import { setTimeout, setImmediate } from "node:timers/promises";
+import { setImmediate, setTimeout } from "node:timers/promises";
 import { Log } from "debug-level";
 import type { Packet } from "node-av";
 
@@ -27,6 +27,9 @@ export class BaseMediaStream extends Writable {
 
   private _streamStartTime?: number;
   private _virtualTime?: number;
+  // Accumulated intentional pacing deviations (livestream catchup + A/V
+  // sync). Applied additively to the virtual clock so skipped/shortened
+  // sleeps are forgiven, not paid back as extra sleep on later frames.
   private _catchupOffset = 0;
 
   private _livestreamCatchup = false;
@@ -230,11 +233,17 @@ export class BaseMediaStream extends Writable {
 
     // Sync: if behind the partner, skip sleep to catch up
     if (this.sync && this.isBehind) {
+      // Forgive the skipped sleep: _virtualTime was already advanced for
+      // this frame, so without this the skipped time would be paid back as
+      // ~2x sleep on the next frame (skip + normal = oscillation).
+      this._catchupOffset -= sleep;
       this._loggerSync.debug(
         {
           stats: {
             pts: this.pts,
             pts_other: this.syncStream?.pts,
+            frametime,
+            skippedSleep: sleep,
           },
         },
         "Stream is behind. Not sleeping for this frame",
@@ -256,6 +265,9 @@ export class BaseMediaStream extends Writable {
         },
         `Stream is ahead. Waiting for partner to catch up`,
       );
+      // Forgive the difference between the computed sleep and the actual
+      // wait, for the same reason as the isBehind path above.
+      this._catchupOffset -= sleep - frametime;
       // Single precision wait instead of a loop — rechecked on next _write
       await this.precisionWait(frametime);
       callback(null);
@@ -285,6 +297,7 @@ export class BaseMediaStream extends Writable {
                 queueLength,
                 excess,
                 factor,
+                frametime,
                 sleep,
                 effectiveSleep: adjusted,
                 saved,
@@ -304,6 +317,8 @@ export class BaseMediaStream extends Writable {
           virtualTime: this._virtualTime,
           catchupOffset: this._catchupOffset,
           frameDeadline,
+          frametime,
+          sleep,
           effectiveSleep,
         },
       },
