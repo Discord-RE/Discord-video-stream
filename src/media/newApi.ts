@@ -258,7 +258,7 @@ export function prepareStream(
   if (minimizeLatency) {
     command.inputOptions(
       "-fflags nobuffer",
-      "-flags lowdelay",
+      "-flags low_delay",
       "-flush_packets 1",
       "-max_delay 100000",
     );
