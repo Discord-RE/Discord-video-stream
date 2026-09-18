@@ -6,6 +6,11 @@ import type { Packet } from "node-av";
 export type BaseMediaStreamOptions = {
   noSleep?: boolean;
   livestreamCatchup?: boolean;
+  /**
+   * Backlog size (in frames) that triggers livestream catchup. Calibrated
+   * at 30fps: the effective threshold scales with the measured frame rate
+   * so it always represents the same media-time depth (~333ms by default).
+   */
   catchupQueueThreshold?: number;
   catchupSpeedupFactor?: number;
   catchupMinFactor?: number;
@@ -16,6 +21,13 @@ export type BaseMediaStreamOptions = {
 // aiming the coarse timer this far inside the deadline lets the spin phase
 // absorb that latency instead of overshooting the target.
 const SPIN_WINDOW_MS = 2;
+
+// Reference frame interval the catchup queue threshold is calibrated
+// against: the default 10 frames is ~333ms of backlog at 30fps. The
+// effective threshold scales with the measured frame rate so it always
+// represents the same media-time depth — 10 raw frames would only be 83ms
+// at 120fps, shallow enough that ordinary jitter trips catchup constantly.
+const CATCHUP_THRESHOLD_REF_FRAMETIME_MS = 1000 / 30;
 
 export class BaseMediaStream extends Writable {
   private _pts?: number;
@@ -40,6 +52,10 @@ export class BaseMediaStream extends Writable {
   private _catchupQueueThreshold!: number;
   private _catchupSpeedupFactor!: number;
   private _catchupMinFactor!: number;
+  // Smoothed frame interval of the incoming content. Content property, not
+  // timeline state, so it survives resetTimingState and adapts within a
+  // few frames if the content changes.
+  private _avgFrametime?: number;
 
   constructor(type: string, options: BaseMediaStreamOptions = {}) {
     super({ objectMode: true, highWaterMark: 32 });
@@ -101,6 +117,18 @@ export class BaseMediaStream extends Writable {
   }
   get catchupQueueThreshold(): number {
     return this._catchupQueueThreshold;
+  }
+  // Effective queue threshold in frames, scaled from the configured value
+  // so the backlog depth stays constant in media time across frame rates.
+  private get _catchupThresholdFrames(): number {
+    const base = this._catchupQueueThreshold;
+    if (base <= 0) return 0;
+    const avg = this._avgFrametime;
+    if (avg === undefined || !(avg > 0)) return base;
+    return Math.max(
+      1,
+      Math.round(base * (CATCHUP_THRESHOLD_REF_FRAMETIME_MS / avg)),
+    );
   }
   set catchupQueueThreshold(n: number) {
     if (!Number.isFinite(n) || n < 0) return;
@@ -190,6 +218,12 @@ export class BaseMediaStream extends Writable {
 
     const frametime = (Number(duration) / timeBase.den) * timeBase.num * 1000;
     const frameSize = data.length;
+    if (Number.isFinite(frametime) && frametime > 0) {
+      this._avgFrametime =
+        this._avgFrametime === undefined
+          ? frametime
+          : this._avgFrametime + 0.15 * (frametime - this._avgFrametime);
+    }
 
     const sendStart = performance.now();
     await this._sendFrame(Buffer.from(data), frametime);
@@ -301,7 +335,8 @@ export class BaseMediaStream extends Writable {
     let effectiveDeadline = deadline;
     if (this._livestreamCatchup && sleep > 0) {
       const queueLength = this.writableLength;
-      const excess = queueLength - this._catchupQueueThreshold;
+      const threshold = this._catchupThresholdFrames;
+      const excess = queueLength - threshold;
       if (excess > 0) {
         const factor = Math.max(
           this._catchupMinFactor,
@@ -319,6 +354,7 @@ export class BaseMediaStream extends Writable {
                 stats: {
                   pts: ptsMs,
                   queueLength,
+                  threshold,
                   excess,
                   factor,
                   frametime,
