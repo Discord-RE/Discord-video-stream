@@ -12,7 +12,17 @@ export type BaseMediaStreamOptions = {
    * so it always represents the same media-time depth (~333ms by default).
    */
   catchupQueueThreshold?: number;
+  /**
+   * Per-frame catchup aggressiveness near the threshold. Kept for backward
+   * compatibility; small backlogs still converge gently regardless of this.
+   */
   catchupSpeedupFactor?: number;
+  /**
+   * Floor for the catchup sleep multiplier, i.e. `1 - catchupMinFactor` is
+   * the maximum speedup applied to deep backlogs. Lower = faster
+   * fast-forward on multi-second gaps (never drops frames). Default 0.25
+   * allows up to ~4x drain rate; set 0.85 for the old gentle 15% ceiling.
+   */
   catchupMinFactor?: number;
 };
 
@@ -22,8 +32,10 @@ export type BaseMediaStreamOptions = {
 // across 15/30/60/120fps content.
 const CATCHUP_REF_FRAMETIME_MS = 1000 / 30;
 
-// Fraction of one frametime an A/V sync correction may add/remove per
-// frame. Small steps converge smoothly; large steps inject visible jitter.
+// Gentle per-frame warp for small A/V errors. Small steps converge
+// smoothly; large steps inject visible jitter. Large behind-errors use a
+// progressive compress (see below) so seconds-scale gaps still converge
+// in ~1s without ever dropping a frame.
 const SYNC_MAX_WARP_FRACTION = 0.3;
 // Absolute cap on a single sync stretch so a huge error can't park the
 // stream. Large jumps are discontinuities (seek/loop) and handled by
@@ -86,7 +98,7 @@ export class BaseMediaStream extends Writable {
       livestreamCatchup = false,
       catchupQueueThreshold = 10,
       catchupSpeedupFactor = 0.97,
-      catchupMinFactor = 0.85,
+      catchupMinFactor = 0.25,
     } = options;
     this._noSleep = noSleep;
     this._livestreamCatchup = livestreamCatchup;
@@ -327,28 +339,39 @@ export class BaseMediaStream extends Writable {
       const nominal = this._clock.t0 + (ptsMs - this._p0);
       const sleep = nominal - now0 - this._sendEmaMs - this._timerBiasEmaMs;
 
-      // --- A/V sync trim: bounded symmetric warp, deadbanded ---
-      // Ahead → stretch (slow down); behind → compress (hurry). At most
-      // 30% of one frametime per frame, so large errors converge over
-      // several frames as smooth fast-forward/slow-motion instead of a
-      // skipped sleep or a multi-frame stall (both are step jitter, and
-      // skipping is a burst the decoder/reference chain still has to
-      // absorb as suddenly-back-to-back sends).
+      // --- A/V sync trim: deadbanded warp, gentle when close ---
+      // Ahead → stretch (slow down), capped small so a far-ahead stream
+      // never parks/freezes: convergence comes from the behind side
+      // hurrying. Behind → compress (hurry) progressively, ~25% of the
+      // error per frame, so a 3s gap converges in ~1s as decoder-safe
+      // fast-forward instead of hundreds of 30%-of-frametime steps.
+      // Neither side ever skips a frame: the wait is only shortened,
+      // never negative, preserving the inter-frame reference chain.
       let syncTrim = 0;
       syncError = this._syncErrorMs;
       if (
         syncError !== undefined &&
         Math.abs(syncError) > this._syncTolerance
       ) {
-        const cap = SYNC_MAX_WARP_FRACTION * frametime;
         if (syncError > 0) {
+          const cap = SYNC_MAX_WARP_FRACTION * frametime;
           syncTrim = Math.min(
             syncError - this._syncTolerance,
             cap,
             SYNC_MAX_STRETCH_MS,
           );
         } else {
-          syncTrim = -Math.min(-(syncError + this._syncTolerance), cap);
+          const behindExcess = -(syncError + this._syncTolerance);
+          const want = Math.max(
+            behindExcess * 0.25,
+            SYNC_MAX_WARP_FRACTION * frametime,
+          );
+          // Ceil at 90% of this sleep: the wait stays non-negative, i.e.
+          // at most ~10x fast-forward per frame. When already late
+          // (sleep <= 0) there is nothing to compress — sending ASAP is
+          // already the fastest possible pace.
+          const maxCompress = sleep > 0 ? 0.9 * sleep : 0;
+          syncTrim = -Math.min(behindExcess, want, maxCompress);
         }
       }
 
