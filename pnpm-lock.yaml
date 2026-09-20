@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@lng2004/node-datachannel':
-        specifier: 0.33.2-20260825
-        version: 0.33.2-20260825
+        specifier: 0.33.2-20260919
+        version: 0.33.2-20260919
       '@snazzah/davey':
         specifier: ^0.1.12
         version: 0.1.12(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)
@@ -359,8 +359,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@lng2004/node-datachannel@0.33.2-20260825':
-    resolution: {integrity: sha512-2WcLE4q/HCQQ7oL2IapsrzZuMIvlQ7upCrryShXGNFdNYLB7r8WnvLC/A20hBspxXaoSFzmbWV4xk3dFg6LbLg==}
+  '@lng2004/node-datachannel@0.33.2-20260919':
+    resolution: {integrity: sha512-32GVPXMgT6NHEcojsbpKIuroEtzMfd4JC3s0+vWv7ETSCMZVzR1dJhlxmNq6eOYwt/KvTn+TOuE8CMshUTtxPg==}
     engines: {node: '>=18.20.0'}
 
   '@minhducsun2002/leb128@1.0.0':
@@ -1568,7 +1568,7 @@ snapshots:
   '@lng2004/ndc-win32-x64-msvc@0.33.2-20260825':
     optional: true
 
-  '@lng2004/node-datachannel@0.33.2-20260825':
+  '@lng2004/node-datachannel@0.33.2-20260919':
     dependencies:
       detect-libc: 2.1.2
     optionalDependencies:
