@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@lng2004/node-datachannel':
-        specifier: 0.33.2-20260825
-        version: 0.33.2-20260825
+        specifier: 0.33.2-20260921
+        version: 0.33.2-20260921
       '@snazzah/davey':
         specifier: ^0.1.12
         version: 0.1.12(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)
@@ -310,57 +310,57 @@ packages:
     resolution: {integrity: sha512-mqWXDAc2b47msMuq/B+VC98n1LGs6mVxMk9S+cutV2E0pVayTCpXFlmPL1qh6c3qyyZbQuA9WvPeSdyJTf9Nxg==}
     engines: {node: '>=20.18'}
 
-  '@lng2004/ndc-android-arm64@0.33.2-20260825':
-    resolution: {integrity: sha512-4IaXL2o0rdSMYqDosvLhVZwkk85v0TOoNkeXBFsCs8UfwaHtzQ7ZGIuzF2vZRTgPFNxfc+eFDmCNHPdixceUdA==}
+  '@lng2004/ndc-android-arm64@0.33.2-20260921':
+    resolution: {integrity: sha512-k0Ffl4ShkIsP/JYYGphqajkiMUO5B733EXj+YBzV41taQ9NXUuAMWzHAZi4rJe6qOhxkYvonnzOYhg5ud3plNQ==}
     cpu: [arm64]
     os: [android]
 
-  '@lng2004/ndc-darwin-arm64@0.33.2-20260825':
-    resolution: {integrity: sha512-Bsz+7EdSDYHAtpfujFmf0Tu39xpugd/aksZr6MwV6Ga5mH7Kxid5m0UB4xTBYnorrS4WnbXGCl/AOIYpk8sNTg==}
+  '@lng2004/ndc-darwin-arm64@0.33.2-20260921':
+    resolution: {integrity: sha512-mKqW4IIZcf+mAh8UPSOjJXZyeJSRVole6Ajl+w1djG6gyVVFKCSpqYwyzNdBr5A4CygEXUNnzx346P92SEANuA==}
     cpu: [arm64]
     os: [darwin]
 
-  '@lng2004/ndc-darwin-x64@0.33.2-20260825':
-    resolution: {integrity: sha512-i7bl+8cKEA/aaLycHrS7enpR6TPUgF0RCtiIteIcY44LZEK9KBmDT+8Tp2uPx2uNrBR5PJHS4tuXgTzkX1N9cA==}
+  '@lng2004/ndc-darwin-x64@0.33.2-20260921':
+    resolution: {integrity: sha512-Cxls4Q+bThsW5+aUcohDwNOszu4tgzrd3x9G1jKRS0pLy3YCLEbbtnwiw7ZScWZJ285KeRSycspr9NqTQ1Eq0g==}
     cpu: [x64]
     os: [darwin]
 
-  '@lng2004/ndc-linux-arm64-gnu@0.33.2-20260825':
-    resolution: {integrity: sha512-393a3bnoteCWZt4i5683+NhNYqw2zTXM3NLEgQQ9BMVSFMcrMjM9qiEnBSPWtBnX9vSlr6NjVvSWyoXChVgmGw==}
+  '@lng2004/ndc-linux-arm64-gnu@0.33.2-20260921':
+    resolution: {integrity: sha512-0v4osbERuwWz+8uxkuju/lEvP/7Bt6fBOgjrGvZ5NKV6DjxrFvCF32zzhwRQDNvTufT5sfe9k5ke7YpecbHG/w==}
     cpu: [arm64]
     os: [linux]
     libc: [glibc]
 
-  '@lng2004/ndc-linux-arm64-musl@0.33.2-20260825':
-    resolution: {integrity: sha512-+7XdCJjTfAC9WdKaBoKfiS+k5Hk0ZPWiYK8kZUCfXOlaHV8aXB1tLCnNnmFu5zj0diVZ9SuNm752Jnz3Q3zzdA==}
+  '@lng2004/ndc-linux-arm64-musl@0.33.2-20260921':
+    resolution: {integrity: sha512-MN/HCzj37RzckYIg7zsUyDNP4SCgQf0kSuU4v+8Om91CexaK0/r2Klf1l/3Gt0QAmlzNl/pvDiryXsdigpkWAQ==}
     cpu: [arm64]
     os: [linux]
     libc: [musl]
 
-  '@lng2004/ndc-linux-x64-gnu@0.33.2-20260825':
-    resolution: {integrity: sha512-VT0ET2LfAJKYLjow2ccb/jhHo6ylG0cPzuYJ9BFgOLmmC/g/6HLLwTR5OwKQYG5AUh31xTd5p+Cu+2zfmXPXGg==}
+  '@lng2004/ndc-linux-x64-gnu@0.33.2-20260921':
+    resolution: {integrity: sha512-E4RHLNjr90o8SfFXtxlnSe5UcKefv/CymKXUmy0ZPRvCLSb7Klz0Ks0HQCgwUUpgxd8inrt06/BuzSM7yEjrvA==}
     cpu: [x64]
     os: [linux]
     libc: [glibc]
 
-  '@lng2004/ndc-linux-x64-musl@0.33.2-20260825':
-    resolution: {integrity: sha512-0GMbxA0lgn3IXMdEHFTI1LWRk+jPVtIhT8HuR9u73Cnu9RRSJlW3Lt5dR2PjluyDIWYGvoitFCHrpTy4SSGqbw==}
+  '@lng2004/ndc-linux-x64-musl@0.33.2-20260921':
+    resolution: {integrity: sha512-txinPoEVKOAYgoqG8NPINomrvy6CtbmdKsQSd5y/chmv1hQMKIIRD+LRei6NJbSf8P52COmzdABrs+BLQtGOwQ==}
     cpu: [x64]
     os: [linux]
     libc: [musl]
 
-  '@lng2004/ndc-win32-arm64-msvc@0.33.2-20260825':
-    resolution: {integrity: sha512-c0/Ii+M0Xz61obldQGvvAASfqCKU9IUwjlE8t8d87Z8sMoMbR9lY6KWi1ZFvHXLhPjaAWOHXn3AQOuX3SdDchg==}
+  '@lng2004/ndc-win32-arm64-msvc@0.33.2-20260921':
+    resolution: {integrity: sha512-QqP62WyQr8cjWcEQHiZhX0T4v/lWair4U8pnEbWFjPTeQd+mS+038RD7Thv+w2QH1tOWt7q9rJCizWa5bWEnYQ==}
     cpu: [arm64]
     os: [win32]
 
-  '@lng2004/ndc-win32-x64-msvc@0.33.2-20260825':
-    resolution: {integrity: sha512-4QfzsQg5bEzqvGyfC72Jg6HHwICc5IbpXN/zs8Vf9vylfZJ+ewdUNtTTpT4SIRtSWPvdp5LwP+ck42S5Do5OPA==}
+  '@lng2004/ndc-win32-x64-msvc@0.33.2-20260921':
+    resolution: {integrity: sha512-4tL4/5vZjOgfG+xUe27QF33Es7zGRmhTPdXucC7kmIxLXGFCWLWz8anhRt4qHjbCTFy3doBSZHgNGuCtZCxweg==}
     cpu: [x64]
     os: [win32]
 
-  '@lng2004/node-datachannel@0.33.2-20260825':
-    resolution: {integrity: sha512-2WcLE4q/HCQQ7oL2IapsrzZuMIvlQ7upCrryShXGNFdNYLB7r8WnvLC/A20hBspxXaoSFzmbWV4xk3dFg6LbLg==}
+  '@lng2004/node-datachannel@0.33.2-20260921':
+    resolution: {integrity: sha512-uJ7Z24qeNVeJVDPiRF1Gt/Z3ZktYVqu+CG3fOvQPszvm6J+dLfySX4i0MiCc34ak4Z1o/5bdycCBz2fVaT2huw==}
     engines: {node: '>=18.20.0'}
 
   '@minhducsun2002/leb128@1.0.0':
@@ -1541,46 +1541,46 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@lng2004/ndc-android-arm64@0.33.2-20260825':
+  '@lng2004/ndc-android-arm64@0.33.2-20260921':
     optional: true
 
-  '@lng2004/ndc-darwin-arm64@0.33.2-20260825':
+  '@lng2004/ndc-darwin-arm64@0.33.2-20260921':
     optional: true
 
-  '@lng2004/ndc-darwin-x64@0.33.2-20260825':
+  '@lng2004/ndc-darwin-x64@0.33.2-20260921':
     optional: true
 
-  '@lng2004/ndc-linux-arm64-gnu@0.33.2-20260825':
+  '@lng2004/ndc-linux-arm64-gnu@0.33.2-20260921':
     optional: true
 
-  '@lng2004/ndc-linux-arm64-musl@0.33.2-20260825':
+  '@lng2004/ndc-linux-arm64-musl@0.33.2-20260921':
     optional: true
 
-  '@lng2004/ndc-linux-x64-gnu@0.33.2-20260825':
+  '@lng2004/ndc-linux-x64-gnu@0.33.2-20260921':
     optional: true
 
-  '@lng2004/ndc-linux-x64-musl@0.33.2-20260825':
+  '@lng2004/ndc-linux-x64-musl@0.33.2-20260921':
     optional: true
 
-  '@lng2004/ndc-win32-arm64-msvc@0.33.2-20260825':
+  '@lng2004/ndc-win32-arm64-msvc@0.33.2-20260921':
     optional: true
 
-  '@lng2004/ndc-win32-x64-msvc@0.33.2-20260825':
+  '@lng2004/ndc-win32-x64-msvc@0.33.2-20260921':
     optional: true
 
-  '@lng2004/node-datachannel@0.33.2-20260825':
+  '@lng2004/node-datachannel@0.33.2-20260921':
     dependencies:
       detect-libc: 2.1.2
     optionalDependencies:
-      '@lng2004/ndc-android-arm64': 0.33.2-20260825
-      '@lng2004/ndc-darwin-arm64': 0.33.2-20260825
-      '@lng2004/ndc-darwin-x64': 0.33.2-20260825
-      '@lng2004/ndc-linux-arm64-gnu': 0.33.2-20260825
-      '@lng2004/ndc-linux-arm64-musl': 0.33.2-20260825
-      '@lng2004/ndc-linux-x64-gnu': 0.33.2-20260825
-      '@lng2004/ndc-linux-x64-musl': 0.33.2-20260825
-      '@lng2004/ndc-win32-arm64-msvc': 0.33.2-20260825
-      '@lng2004/ndc-win32-x64-msvc': 0.33.2-20260825
+      '@lng2004/ndc-android-arm64': 0.33.2-20260921
+      '@lng2004/ndc-darwin-arm64': 0.33.2-20260921
+      '@lng2004/ndc-darwin-x64': 0.33.2-20260921
+      '@lng2004/ndc-linux-arm64-gnu': 0.33.2-20260921
+      '@lng2004/ndc-linux-arm64-musl': 0.33.2-20260921
+      '@lng2004/ndc-linux-x64-gnu': 0.33.2-20260921
+      '@lng2004/ndc-linux-x64-musl': 0.33.2-20260921
+      '@lng2004/ndc-win32-arm64-msvc': 0.33.2-20260921
+      '@lng2004/ndc-win32-x64-msvc': 0.33.2-20260921
 
   '@minhducsun2002/leb128@1.0.0':
     optional: true

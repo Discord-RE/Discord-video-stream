@@ -169,7 +169,7 @@ export class WebRtcConnWrapper {
   public setPacketizer(videoCodec: string): void {
     if (!this.mediaConnection.webRtcParams)
       throw new Error("WebRTC connection not ready");
-    const { audioSsrc, videoSsrc } = this.mediaConnection.webRtcParams;
+    const { audioSsrc, videoSsrc, rtxSsrc } = this.mediaConnection.webRtcParams;
     const rtpConfigAudio = new RtpPacketizationConfig(
       audioSsrc,
       "",
@@ -193,6 +193,7 @@ export class WebRtcConnWrapper {
     rtpConfigVideo.playoutDelayId = 5;
     rtpConfigVideo.playoutDelayMin = 0;
     rtpConfigVideo.playoutDelayMax = 10;
+    this._videoDef.addRtxSSRC(videoSsrc, rtxSsrc);
     switch (this._videoCodec) {
       case "H264":
         this._videoPacketizer = new H264RtpPacketizer(

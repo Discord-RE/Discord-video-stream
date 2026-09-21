@@ -26,7 +26,7 @@ What I implemented and what I did not.
 ### Packet types
 
 - [X] RTP (sending of realtime data)
-- [ ] RTX (retransmission)
+- [X] RTX (retransmission)
 
 ### Connection types
 
