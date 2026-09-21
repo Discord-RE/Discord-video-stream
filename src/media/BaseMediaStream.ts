@@ -182,8 +182,8 @@ export class BaseMediaStream extends Writable {
     this._catchupMinFactor = n;
   }
   protected async _sendFrame(
-    frame: Buffer,
-    frametime: number,
+    _frame: Buffer,
+    _frametime: number,
   ): Promise<void> {
     throw new Error("Not implemented");
   }
