@@ -105,7 +105,7 @@ export class BaseMediaStream extends Writable {
   private _catchupLowerBoundMs: number = DEFAULT_CATCHUP.lowerBoundMs;
   // Schmitt latch: engaged at >= upper, released at <= lower, held in
   // between — prevents on/off chatter around a single threshold.
-  private _catchupActive = false;
+  private _catchupEngaged = false;
   private _catchupSpeedupFactor: number = DEFAULT_CATCHUP.speedupFactor;
   private _catchupMinFactor: number = DEFAULT_CATCHUP.minFactor;
   private _catchupSlowdownFactor: number = DEFAULT_CATCHUP.slowdownFactor;
@@ -191,7 +191,7 @@ export class BaseMediaStream extends Writable {
   }
   set livestreamCatchup(val: boolean) {
     // Any toggle starts fresh: disengaged, re-arms at the upper bound.
-    if (this._livestreamCatchup !== val) this._catchupActive = false;
+    if (this._livestreamCatchup !== val) this._catchupEngaged = false;
     this._livestreamCatchup = val;
   }
   get catchupUpperBoundMs(): number {
@@ -253,14 +253,14 @@ export class BaseMediaStream extends Writable {
     throw new Error("Not implemented");
   }
   // P-controller gain: speedup per ms of backlog above the lower bound.
-  private get _catchupGainPerMs(): number {
+  private get _catchupSpeedupGainPerMs(): number {
     return (1 - this._catchupSpeedupFactor) / CATCHUP_REF_FRAMETIME_MS;
   }
   private resetTimingState() {
     this._t0 = undefined;
     this._p0 = undefined;
     this._pts = undefined;
-    this._catchupActive = false;
+    this._catchupEngaged = false;
   }
 
   // A/V sync error: this stream's media elapsed minus partner's last
@@ -343,7 +343,7 @@ export class BaseMediaStream extends Writable {
       return;
     }
 
-    const now0 = performance.now();
+    const nowMs = performance.now();
 
     // First frame or PTS discontinuity (seek/loop/wrap): rebase and
     // send immediately. Never rebase on mere lateness.
@@ -353,8 +353,8 @@ export class BaseMediaStream extends Writable {
       // otherwise every frame would start minutes late. The partner's
       // anchor is untouched.
       const anchor = this._syncStream?._t0;
-      this._t0 = now0;
-      this._p0 = anchor === undefined ? ptsMs : ptsMs - (now0 - anchor);
+      this._t0 = nowMs;
+      this._p0 = anchor === undefined ? ptsMs : ptsMs - (nowMs - anchor);
       await sendAndPublish();
       callback(null);
       return;
@@ -371,41 +371,44 @@ export class BaseMediaStream extends Writable {
         "PTS discontinuity. Rebasing presentation timeline",
       );
       this._p0 = ptsMs;
-      this._t0 = now0;
+      this._t0 = nowMs;
       await sendAndPublish();
       callback(null);
       return;
     }
 
     // --- Nominal deadline ---
-    const nominal = this._t0 + (ptsMs - this._p0);
-    const sleep = nominal - now0 - this._sendEmaMs - this._timerBiasEmaMs;
+    const nominalMs = this._t0 + (ptsMs - this._p0);
+    const sleepMs = nominalMs - nowMs - this._sendEmaMs - this._timerBiasEmaMs;
 
     // --- A/V sync trim ---
     // Ahead → stretch (slow down), capped so a far-ahead stream never
     // parks. Behind → compress (hurry) progressively, ~25% of error per
     // frame — fast convergence without skipping, preserving the
     // inter-frame reference chain.
-    let syncTrim = 0;
-    const syncError = this._syncErrorMs(ptsMs);
-    if (syncError !== undefined && Math.abs(syncError) > this._syncTolerance) {
-      if (syncError > 0) {
-        const cap = SYNC_MAX_WARP_FRACTION * frametime;
-        syncTrim = Math.min(
-          syncError - this._syncTolerance,
-          cap,
+    let syncTrimMs = 0;
+    const syncErrorMs = this._syncErrorMs(ptsMs);
+    if (
+      syncErrorMs !== undefined &&
+      Math.abs(syncErrorMs) > this._syncTolerance
+    ) {
+      if (syncErrorMs > 0) {
+        const warpCapMs = SYNC_MAX_WARP_FRACTION * frametime;
+        syncTrimMs = Math.min(
+          syncErrorMs - this._syncTolerance,
+          warpCapMs,
           SYNC_MAX_STRETCH_MS,
         );
       } else {
-        const behindExcess = -(syncError + this._syncTolerance);
-        const want = Math.max(
-          behindExcess * 0.25,
+        const behindExcessMs = -(syncErrorMs + this._syncTolerance);
+        const behindWantMs = Math.max(
+          behindExcessMs * 0.25,
           SYNC_MAX_WARP_FRACTION * frametime,
         );
-        // Ceil at 75% of sleep: non-negative wait, max ~4x fast-forward
-        // per frame. When already late (sleep <= 0), compress = 0.
-        const maxCompress = sleep > 0 ? 0.75 * sleep : 0;
-        syncTrim = -Math.min(behindExcess, want, maxCompress);
+        // Ceil at 75% of sleepMs: non-negative wait, max ~4x fast-forward
+        // per frame. When already late (sleepMs <= 0), compress = 0.
+        const maxCompressMs = sleepMs > 0 ? 0.75 * sleepMs : 0;
+        syncTrimMs = -Math.min(behindExcessMs, behindWantMs, maxCompressMs);
       }
     }
 
@@ -419,30 +422,30 @@ export class BaseMediaStream extends Writable {
     // a send-phase offset ≈ the settled queue depth, i.e. a jitter
     // buffer with bounded added latency). No accumulation anywhere —
     // nominal deadlines stay absolute.
-    let catchupSaving = 0;
-    let slowStretch = 0;
+    let catchupSpeedupMs = 0;
+    let catchupSlowdownMs = 0;
     if (this._livestreamCatchup) {
       const backlogMs = this.writableLength * avg;
-      if (backlogMs <= this._catchupLowerBoundMs) this._catchupActive = false;
+      if (backlogMs <= this._catchupLowerBoundMs) this._catchupEngaged = false;
       else if (backlogMs >= this._catchupUpperBoundMs)
-        this._catchupActive = true;
-      if (this._catchupActive && sleep > 0) {
-        const excess = backlogMs - this._catchupLowerBoundMs;
-        const u = Math.min(
+        this._catchupEngaged = true;
+      if (this._catchupEngaged && sleepMs > 0) {
+        const excessMs = backlogMs - this._catchupLowerBoundMs;
+        const speedup = Math.min(
           1 - this._catchupMinFactor,
-          excess * this._catchupGainPerMs,
+          excessMs * this._catchupSpeedupGainPerMs,
         );
-        if (u > 0) catchupSaving = sleep * u;
-      } else if (!this._catchupActive) {
+        if (speedup > 0) catchupSpeedupMs = sleepMs * speedup;
+      } else if (!this._catchupEngaged) {
         // Shallow queue: stretch this frame so input accumulates during
         // the wait. Mutually exclusive with speedup (the latch always
         // releases at <= lower before we get here). Capped at the lower
         // bound so a single wait never exceeds the configured depth.
-        const deficit = this._catchupLowerBoundMs - backlogMs;
-        if (deficit > 0)
-          slowStretch = Math.min(
+        const deficitMs = this._catchupLowerBoundMs - backlogMs;
+        if (deficitMs > 0)
+          catchupSlowdownMs = Math.min(
             this._catchupLowerBoundMs,
-            deficit * this._catchupSlowdownFactor,
+            deficitMs * this._catchupSlowdownFactor,
           );
       }
     }
@@ -451,45 +454,48 @@ export class BaseMediaStream extends Writable {
     // absorb — draining beats aligning. Symmetrically, AV sync beats
     // buffer rebuild: hurrying (behind the partner) must not be
     // cancelled out by a shallow-queue stretch.
-    if (syncTrim > 0 && (catchupSaving > 0 || sleep - catchupSaving <= 0)) {
-      syncTrim = 0;
+    if (
+      syncTrimMs > 0 &&
+      (catchupSpeedupMs > 0 || sleepMs - catchupSpeedupMs <= 0)
+    ) {
+      syncTrimMs = 0;
     }
-    if (syncTrim < 0) slowStretch = 0;
+    if (syncTrimMs < 0) catchupSlowdownMs = 0;
 
-    const target =
-      nominal -
+    const targetMs =
+      nominalMs -
       this._sendEmaMs -
       this._timerBiasEmaMs +
-      syncTrim -
-      catchupSaving +
-      slowStretch;
+      syncTrimMs -
+      catchupSpeedupMs +
+      catchupSlowdownMs;
 
     if (this._loggerSleep.enabled.trace) {
       this._loggerSleep.trace(
         {
           stats: {
             pts: ptsMs,
-            nominal,
-            sleep,
-            syncError,
-            syncTrim,
-            catchupSaving,
-            catchupActive: this._catchupActive,
-            slowStretch,
-            target,
+            nominalMs,
+            sleepMs,
+            syncErrorMs,
+            syncTrimMs,
+            catchupSpeedupMs,
+            catchupEngaged: this._catchupEngaged,
+            catchupSlowdownMs,
+            targetMs,
             frametime,
           },
         },
-        `Sleeping for ${Math.max(0, target - now0).toFixed(2)}ms`,
+        `Sleeping for ${Math.max(0, targetMs - nowMs).toFixed(2)}ms`,
       );
-    } else if (this._loggerSync.enabled.debug && syncTrim !== 0) {
+    } else if (this._loggerSync.enabled.debug && syncTrimMs !== 0) {
       this._loggerSync.debug(
-        { stats: { pts: ptsMs, syncError, syncTrim, frametime } },
-        syncTrim > 0
+        { stats: { pts: ptsMs, syncErrorMs, syncTrimMs, frametime } },
+        syncTrimMs > 0
           ? "Stream is ahead. Stretching sleep for this frame"
           : "Stream is behind. Compressing sleep for this frame",
       );
-    } else if (this._loggerSleep.enabled.debug && catchupSaving > 0) {
+    } else if (this._loggerSleep.enabled.debug && catchupSpeedupMs > 0) {
       this._loggerSleep.debug(
         {
           stats: {
@@ -497,13 +503,13 @@ export class BaseMediaStream extends Writable {
             queueLength: this.writableLength,
             backlogMs: this.writableLength * avg,
             frametime,
-            sleep,
-            catchupSaving,
+            sleepMs,
+            catchupSpeedupMs,
           },
         },
-        `Livestream catchup: queue backed up. Sleeping for ${(sleep - catchupSaving).toFixed(2)}ms instead of ${sleep.toFixed(2)}ms`,
+        `Livestream catchup: queue backed up. Sleeping for ${(sleepMs - catchupSpeedupMs).toFixed(2)}ms instead of ${sleepMs.toFixed(2)}ms`,
       );
-    } else if (this._loggerSleep.enabled.debug && slowStretch > 0) {
+    } else if (this._loggerSleep.enabled.debug && catchupSlowdownMs > 0) {
       this._loggerSleep.debug(
         {
           stats: {
@@ -511,23 +517,23 @@ export class BaseMediaStream extends Writable {
             queueLength: this.writableLength,
             backlogMs: this.writableLength * avg,
             frametime,
-            sleep,
-            slowStretch,
+            sleepMs,
+            catchupSlowdownMs,
           },
         },
-        `Livestream catchup: queue below lower bound. Sleeping ${slowStretch.toFixed(2)}ms longer`,
+        `Livestream catchup: queue below lower bound. Sleeping ${catchupSlowdownMs.toFixed(2)}ms longer`,
       );
     }
 
     // One timer per frame. Late frames send immediately; PTS-absolute
     // deadline keeps lateness bounded per frame.
-    const wait = target - performance.now();
-    if (wait > 0) {
-      await setTimeout(wait);
-      const late = performance.now() - target;
-      const sample = Math.min(Math.max(late, 0), 10);
+    const waitMs = targetMs - performance.now();
+    if (waitMs > 0) {
+      await setTimeout(waitMs);
+      const lateMs = performance.now() - targetMs;
+      const sampleMs = Math.min(Math.max(lateMs, 0), 10);
       this._timerBiasEmaMs = Math.min(
-        this._timerBiasEmaMs + 0.1 * (sample - this._timerBiasEmaMs),
+        this._timerBiasEmaMs + 0.1 * (sampleMs - this._timerBiasEmaMs),
         TIMER_BIAS_MAX_MS,
       );
     }
