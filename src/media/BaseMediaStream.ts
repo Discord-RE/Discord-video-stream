@@ -7,16 +7,22 @@ export type BaseMediaStreamOptions = {
   noSleep?: boolean;
   livestreamCatchup?: boolean;
   /**
-   * Backlog size (in frames) that triggers livestream catchup. Calibrated
-   * at 30fps: the effective threshold scales with the measured frame rate
-   * so it always represents the same media-time depth (~333ms by default).
+   * Media-time backlog (ms) at which catchup engages. Once engaged it
+   * stays engaged until the backlog drains to `catchupLowerBoundMs`
+   * (hysteresis), so small transient queues never trigger speedup.
    */
-  catchupQueueThreshold?: number;
+  catchupUpperBoundMs?: number;
+  /**
+   * Media-time backlog (ms) at which an engaged catchup releases.
+   * While engaged, the controller drives the backlog down to this
+   * bound — the P-controller setpoint.
+   */
+  catchupLowerBoundMs?: number;
   /**
    * Catchup aggressiveness: each reference-interval (~33ms) of backlog
-   * above the threshold adds roughly (1 - speedupFactor) speedup, so the
-   * default 0.9 still nudges gently (~10%) on a one-frame excess but
-   * reaches near-flat-out fast-forward once a few hundred ms pile up.
+   * above the lower bound adds roughly (1 - speedupFactor) speedup, so
+   * the default 0.9 still nudges gently on a small excess but reaches
+   * near-flat-out fast-forward once a few hundred ms pile up.
    * Explicitly set 0.97 for the older shallower ramp.
    */
   catchupSpeedupFactor?: number;
@@ -39,7 +45,8 @@ const CATCHUP_REF_FRAMETIME_MS = 1000 / 30;
 // Defaults for catchup tuning — field initializers and constructor fallbacks.
 // Invalid values are rejected by the validating setters (RangeError).
 const DEFAULT_CATCHUP = {
-  queueThreshold: 10,
+  upperBoundMs: 1000,
+  lowerBoundMs: 200,
   speedupFactor: 0.9,
   minFactor: 0.2,
 };
@@ -56,6 +63,11 @@ const SYNC_MAX_STRETCH_MS = 100;
 // centered on the deadline. Clamped: removes average bias only, never
 // hurries a frame.
 const TIMER_BIAS_MAX_MS = 3;
+
+function assertBound(name: string, n: number): void {
+  if (!Number.isFinite(n) || n < 0)
+    throw new RangeError(`${name} must be a finite number >= 0, got ${n}`);
+}
 
 export class BaseMediaStream extends Writable {
   private _pts?: number;
@@ -78,7 +90,11 @@ export class BaseMediaStream extends Writable {
   private _p0?: number;
 
   private _livestreamCatchup = false;
-  private _catchupQueueThreshold: number = DEFAULT_CATCHUP.queueThreshold;
+  private _catchupUpperBoundMs: number = DEFAULT_CATCHUP.upperBoundMs;
+  private _catchupLowerBoundMs: number = DEFAULT_CATCHUP.lowerBoundMs;
+  // Schmitt latch: engaged at >= upper, released at <= lower, held in
+  // between — prevents on/off chatter around a single threshold.
+  private _catchupActive = false;
   private _catchupSpeedupFactor: number = DEFAULT_CATCHUP.speedupFactor;
   private _catchupMinFactor: number = DEFAULT_CATCHUP.minFactor;
   // Smoothed frame interval (ms), seeded ~33ms so call sites never deal
@@ -91,20 +107,31 @@ export class BaseMediaStream extends Writable {
   private _timerBiasEmaMs = 0;
 
   constructor(type: string, options: BaseMediaStreamOptions = {}) {
-    super({ objectMode: true, highWaterMark: 32 });
+    super({ objectMode: true, highWaterMark: 128 });
     this._loggerSend = new Log(`stream:${type}:send`);
     this._loggerSync = new Log(`stream:${type}:sync`);
     this._loggerSleep = new Log(`stream:${type}:sleep`);
     const {
       noSleep = false,
       livestreamCatchup = false,
-      catchupQueueThreshold = DEFAULT_CATCHUP.queueThreshold,
+      catchupUpperBoundMs = DEFAULT_CATCHUP.upperBoundMs,
+      catchupLowerBoundMs = DEFAULT_CATCHUP.lowerBoundMs,
       catchupSpeedupFactor = DEFAULT_CATCHUP.speedupFactor,
       catchupMinFactor = DEFAULT_CATCHUP.minFactor,
     } = options;
     this._noSleep = noSleep;
     this._livestreamCatchup = livestreamCatchup;
-    this.catchupQueueThreshold = catchupQueueThreshold;
+    // Bounds: validate individually, cross-check as a pair, then assign
+    // directly — going through the setters first would compare each
+    // bound against the other's default and reject valid pairs.
+    assertBound("catchupUpperBoundMs", catchupUpperBoundMs);
+    assertBound("catchupLowerBoundMs", catchupLowerBoundMs);
+    if (catchupLowerBoundMs > catchupUpperBoundMs)
+      throw new RangeError(
+        `catchupLowerBoundMs (${catchupLowerBoundMs}) must be <= catchupUpperBoundMs (${catchupUpperBoundMs})`,
+      );
+    this._catchupUpperBoundMs = catchupUpperBoundMs;
+    this._catchupLowerBoundMs = catchupLowerBoundMs;
     this.catchupSpeedupFactor = catchupSpeedupFactor;
     this.catchupMinFactor = catchupMinFactor;
   }
@@ -149,17 +176,31 @@ export class BaseMediaStream extends Writable {
     return this._livestreamCatchup;
   }
   set livestreamCatchup(val: boolean) {
+    // Any toggle starts fresh: disengaged, re-arms at the upper bound.
+    if (this._livestreamCatchup !== val) this._catchupActive = false;
     this._livestreamCatchup = val;
   }
-  get catchupQueueThreshold(): number {
-    return this._catchupQueueThreshold;
+  get catchupUpperBoundMs(): number {
+    return this._catchupUpperBoundMs;
   }
-  set catchupQueueThreshold(n: number) {
-    if (!Number.isFinite(n) || n < 0)
+  set catchupUpperBoundMs(n: number) {
+    assertBound("catchupUpperBoundMs", n);
+    if (n < this._catchupLowerBoundMs)
       throw new RangeError(
-        `catchupQueueThreshold must be a finite number >= 0, got ${n}`,
+        `catchupUpperBoundMs (${n}) must be >= catchupLowerBoundMs (${this._catchupLowerBoundMs})`,
       );
-    this._catchupQueueThreshold = Math.floor(n);
+    this._catchupUpperBoundMs = n;
+  }
+  get catchupLowerBoundMs(): number {
+    return this._catchupLowerBoundMs;
+  }
+  set catchupLowerBoundMs(n: number) {
+    assertBound("catchupLowerBoundMs", n);
+    if (n > this._catchupUpperBoundMs)
+      throw new RangeError(
+        `catchupLowerBoundMs (${n}) must be <= catchupUpperBoundMs (${this._catchupUpperBoundMs})`,
+      );
+    this._catchupLowerBoundMs = n;
   }
   get catchupSpeedupFactor(): number {
     return this._catchupSpeedupFactor;
@@ -187,11 +228,7 @@ export class BaseMediaStream extends Writable {
   ): Promise<void> {
     throw new Error("Not implemented");
   }
-  // Threshold in media-time ms (frame-count × reference interval).
-  private get _catchupThresholdMs(): number {
-    return this._catchupQueueThreshold * CATCHUP_REF_FRAMETIME_MS;
-  }
-  // P-controller gain: speedup per ms of excess backlog.
+  // P-controller gain: speedup per ms of backlog above the lower bound.
   private get _catchupGainPerMs(): number {
     return (1 - this._catchupSpeedupFactor) / CATCHUP_REF_FRAMETIME_MS;
   }
@@ -199,6 +236,7 @@ export class BaseMediaStream extends Writable {
     this._t0 = undefined;
     this._p0 = undefined;
     this._pts = undefined;
+    this._catchupActive = false;
   }
 
   // A/V sync error: this stream's media elapsed minus partner's last
@@ -347,14 +385,22 @@ export class BaseMediaStream extends Writable {
       }
     }
 
-    // --- Livestream catchup trim: queue-depth P-controller ---
+    // --- Livestream catchup trim: hysteretic queue-depth P-controller ---
     // backlogMs is media-time so audio (20ms) and video (33ms) behave
-    // identically. No accumulation — nominal deadline is absolute.
+    // identically. Schmitt trigger: engage at >= upper, release at <=
+    // lower, hold in between — transient queues below the upper bound
+    // never trigger speedup, and an engaged catchup is not abandoned
+    // until fully drained. While engaged the controller drives backlog
+    // down to the lower bound, where it releases — no accumulation,
+    // nominal deadline is absolute.
     let catchupSaving = 0;
-    if (this._livestreamCatchup && sleep > 0) {
+    if (this._livestreamCatchup) {
       const backlogMs = this.writableLength * avg;
-      const excess = backlogMs - this._catchupThresholdMs;
-      if (excess > 0) {
+      if (backlogMs <= this._catchupLowerBoundMs) this._catchupActive = false;
+      else if (backlogMs >= this._catchupUpperBoundMs)
+        this._catchupActive = true;
+      if (this._catchupActive && sleep > 0) {
+        const excess = backlogMs - this._catchupLowerBoundMs;
         const u = Math.min(
           1 - this._catchupMinFactor,
           excess * this._catchupGainPerMs,
@@ -386,6 +432,7 @@ export class BaseMediaStream extends Writable {
             syncError,
             syncTrim,
             catchupSaving,
+            catchupActive: this._catchupActive,
             target,
             frametime,
           },
