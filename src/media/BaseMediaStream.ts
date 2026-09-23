@@ -37,6 +37,16 @@ export type BaseMediaStreamOptions = {
    * small backlogs still converge gently. Set 0.85 for a 15% ceiling.
    */
   catchupMinFactor?: number;
+  /**
+   * Proportional gain for the slowdown side of the regulator: when the
+   * queue falls below `catchupLowerBoundMs`, each frame is stretched by
+   * `catchupSlowdownFactor × deficit` ms (capped at the lower bound) so
+   * input refills the queue. Settles near factor/(1+factor) of the
+   * bound (0.5 → ~67ms with the 200ms default); higher gains regulate
+   * tighter toward the bound. Unlike the other factors this is a gain,
+   * not a fraction — any finite value > 0 is accepted.
+   */
+  catchupSlowdownFactor?: number;
 };
 
 // Reference frame interval (~33ms @ 30fps) for catchup tuning.
@@ -49,6 +59,7 @@ const DEFAULT_CATCHUP = {
   lowerBoundMs: 200,
   speedupFactor: 0.9,
   minFactor: 0.2,
+  slowdownFactor: 0.5,
 };
 
 // Per-frame warp for small A/V errors. Small steps converge smoothly;
@@ -97,6 +108,7 @@ export class BaseMediaStream extends Writable {
   private _catchupActive = false;
   private _catchupSpeedupFactor: number = DEFAULT_CATCHUP.speedupFactor;
   private _catchupMinFactor: number = DEFAULT_CATCHUP.minFactor;
+  private _catchupSlowdownFactor: number = DEFAULT_CATCHUP.slowdownFactor;
   // Smoothed frame interval (ms), seeded ~33ms so call sites never deal
   // with undefined. Survives resetTimingState; adapts within a few frames
   // if content changes.
@@ -118,6 +130,7 @@ export class BaseMediaStream extends Writable {
       catchupLowerBoundMs = DEFAULT_CATCHUP.lowerBoundMs,
       catchupSpeedupFactor = DEFAULT_CATCHUP.speedupFactor,
       catchupMinFactor = DEFAULT_CATCHUP.minFactor,
+      catchupSlowdownFactor = DEFAULT_CATCHUP.slowdownFactor,
     } = options;
     this._noSleep = noSleep;
     this._livestreamCatchup = livestreamCatchup;
@@ -134,6 +147,7 @@ export class BaseMediaStream extends Writable {
     this._catchupLowerBoundMs = catchupLowerBoundMs;
     this.catchupSpeedupFactor = catchupSpeedupFactor;
     this.catchupMinFactor = catchupMinFactor;
+    this.catchupSlowdownFactor = catchupSlowdownFactor;
   }
 
   get sync(): boolean {
@@ -221,6 +235,16 @@ export class BaseMediaStream extends Writable {
         `catchupMinFactor must be a finite number in (0, 1), got ${n}`,
       );
     this._catchupMinFactor = n;
+  }
+  get catchupSlowdownFactor(): number {
+    return this._catchupSlowdownFactor;
+  }
+  set catchupSlowdownFactor(n: number) {
+    if (!Number.isFinite(n) || n <= 0)
+      throw new RangeError(
+        `catchupSlowdownFactor must be a finite number > 0, got ${n}`,
+      );
+    this._catchupSlowdownFactor = n;
   }
   protected async _sendFrame(
     _frame: Buffer,
@@ -385,15 +409,18 @@ export class BaseMediaStream extends Writable {
       }
     }
 
-    // --- Livestream catchup trim: hysteretic queue-depth P-controller ---
+    // --- Livestream catchup trim: hysteretic 3-zone queue regulator ---
     // backlogMs is media-time so audio (20ms) and video (33ms) behave
-    // identically. Schmitt trigger: engage at >= upper, release at <=
-    // lower, hold in between — transient queues below the upper bound
-    // never trigger speedup, and an engaged catchup is not abandoned
-    // until fully drained. While engaged the controller drives backlog
-    // down to the lower bound, where it releases — no accumulation,
-    // nominal deadline is absolute.
+    // identically. Zones: >= upper → speed up (Schmitt latch, released
+    // at <= lower so transient queues never trigger speedup and a drain
+    // is never abandoned early); between the bounds → hold; below the
+    // lower bound → slow down proportionally to the deficit so input
+    // refills the queue (with PTS-absolute deadlines this manifests as
+    // a send-phase offset ≈ the settled queue depth, i.e. a jitter
+    // buffer with bounded added latency). No accumulation anywhere —
+    // nominal deadlines stay absolute.
     let catchupSaving = 0;
+    let slowStretch = 0;
     if (this._livestreamCatchup) {
       const backlogMs = this.writableLength * avg;
       if (backlogMs <= this._catchupLowerBoundMs) this._catchupActive = false;
@@ -406,21 +433,36 @@ export class BaseMediaStream extends Writable {
           excess * this._catchupGainPerMs,
         );
         if (u > 0) catchupSaving = sleep * u;
+      } else if (!this._catchupActive) {
+        // Shallow queue: stretch this frame so input accumulates during
+        // the wait. Mutually exclusive with speedup (the latch always
+        // releases at <= lower before we get here). Capped at the lower
+        // bound so a single wait never exceeds the configured depth.
+        const deficit = this._catchupLowerBoundMs - backlogMs;
+        if (deficit > 0)
+          slowStretch = Math.min(
+            this._catchupLowerBoundMs,
+            deficit * this._catchupSlowdownFactor,
+          );
       }
     }
 
     // Suppress stretch when there's backlog to drain or lateness to
-    // absorb — draining beats aligning.
+    // absorb — draining beats aligning. Symmetrically, AV sync beats
+    // buffer rebuild: hurrying (behind the partner) must not be
+    // cancelled out by a shallow-queue stretch.
     if (syncTrim > 0 && (catchupSaving > 0 || sleep - catchupSaving <= 0)) {
       syncTrim = 0;
     }
+    if (syncTrim < 0) slowStretch = 0;
 
     const target =
       nominal -
       this._sendEmaMs -
       this._timerBiasEmaMs +
       syncTrim -
-      catchupSaving;
+      catchupSaving +
+      slowStretch;
 
     if (this._loggerSleep.enabled.trace) {
       this._loggerSleep.trace(
@@ -433,6 +475,7 @@ export class BaseMediaStream extends Writable {
             syncTrim,
             catchupSaving,
             catchupActive: this._catchupActive,
+            slowStretch,
             target,
             frametime,
           },
@@ -459,6 +502,20 @@ export class BaseMediaStream extends Writable {
           },
         },
         `Livestream catchup: queue backed up. Sleeping for ${(sleep - catchupSaving).toFixed(2)}ms instead of ${sleep.toFixed(2)}ms`,
+      );
+    } else if (this._loggerSleep.enabled.debug && slowStretch > 0) {
+      this._loggerSleep.debug(
+        {
+          stats: {
+            pts: ptsMs,
+            queueLength: this.writableLength,
+            backlogMs: this.writableLength * avg,
+            frametime,
+            sleep,
+            slowStretch,
+          },
+        },
+        `Livestream catchup: queue below lower bound. Sleeping ${slowStretch.toFixed(2)}ms longer`,
       );
     }
 
