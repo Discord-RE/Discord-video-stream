@@ -5,62 +5,65 @@ import type { Packet } from "node-av";
 
 export type BaseMediaStreamOptions = {
   noSleep?: boolean;
-  livestreamCatchup?: boolean;
   /**
-   * Media-time backlog (ms) at which catchup engages. Once engaged it
-   * stays engaged until the backlog drains to `catchupLowerBoundMs`
-   * (hysteresis), so small transient queues never trigger speedup.
+   * Floor of the adaptive jitter-buffer target (media ms). A steady
+   * realtime source settles here — this is the steady-state latency
+   * this stream adds, so keep it small for fast volume response.
    */
-  catchupUpperBoundMs?: number;
+  jitterMinBufferMs?: number;
   /**
-   * Media-time backlog (ms) at which an engaged catchup releases.
-   * While engaged, the controller drives the backlog down to this
-   * bound — the P-controller setpoint.
+   * Ceiling of the adaptive jitter-buffer target (media ms). Must be
+   * <= the flood-hold level (derived as max + 200ms).
    */
-  catchupLowerBoundMs?: number;
+  jitterMaxBufferMs?: number;
   /**
-   * Catchup aggressiveness: each reference-interval (~33ms) of backlog
-   * above the lower bound adds roughly (1 - speedupFactor) speedup, so
-   * the default 0.9 still nudges gently on a small excess but reaches
-   * near-flat-out fast-forward once a few hundred ms pile up.
-   * Explicitly set 0.97 for the older shallower ramp.
+   * Target growth per ms of measured input jitter:
+   * target = min(target) + jitterGain * jitter.
    */
-  catchupSpeedupFactor?: number;
+  jitterGain?: number;
   /**
-   * Floor for the catchup sleep multiplier, i.e. `1 - catchupMinFactor` is
-   * the maximum speedup applied to deep backlogs. Lower = faster
-   * fast-forward on multi-second gaps (never drops frames). Default 0.2
-   * allows up to ~5x drain with minimum gaps (~7ms video / ~4ms audio)
-   * that the event loop and the downstream RTP pacer sustain —
-   * deliberately not flat-out: 1ms-gap micro-bursts cost more in loop /
-   * pacer queueing delay than they save. Ramp stays proportional, so
-   * small backlogs still converge gently. Set 0.85 for a 15% ceiling.
+   * Slowest playout rate (media seconds per wall second), in (0, 1].
+   * Gentle slowdown stretches coverage while input refills.
    */
-  catchupMinFactor?: number;
+  minPlayoutRate?: number;
   /**
-   * Proportional gain for the slowdown side of the regulator: when the
-   * queue falls below `catchupLowerBoundMs`, each frame is stretched by
-   * `catchupSlowdownFactor × deficit` ms (capped at the lower bound) so
-   * input refills the queue. Settles near factor/(1+factor) of the
-   * bound (0.5 → ~67ms with the 200ms default); higher gains regulate
-   * tighter toward the bound. Unlike the other factors this is a gain,
-   * not a fraction — any finite value > 0 is accepted.
+   * Fastest playout rate, in [1, 4]. Caps how fast deep queues drain.
    */
-  catchupSlowdownFactor?: number;
+  maxPlayoutRate?: number;
 };
 
-// Reference frame interval (~33ms @ 30fps) for catchup tuning.
-const CATCHUP_REF_FRAMETIME_MS = 1000 / 30;
+// Frame interval seed (~33ms @ 30fps) so call sites never deal with
+// undefined before the first real frametime arrives.
+const REF_FRAMETIME_MS = 1000 / 30;
 
-// Defaults for catchup tuning — field initializers and constructor fallbacks.
-// Invalid values are rejected by the validating setters (RangeError).
-const DEFAULT_CATCHUP = {
-  upperBoundMs: 1000,
-  lowerBoundMs: 200,
-  speedupFactor: 0.9,
-  minFactor: 0.2,
-  slowdownFactor: 0.5,
+const DEFAULT_JITTER = {
+  minBufferMs: 60,
+  maxBufferMs: 400,
+  gain: 2,
+  minRate: 0.92,
+  maxRate: 1.06,
 };
+
+// P-servo gain: +500ms of excess buffer → +5% playout rate. Small on
+// purpose — large corrections come from sustained mild elevation,
+// not from snaps (that's what caused rubber-banding).
+const RATE_GAIN_PER_MS = 0.0001;
+// Slew limit per frame: 1.00 → 1.06 takes ~12 frames (~0.4s video).
+// Every rate change ramps — nothing in the output ever steps.
+const RATE_SLEW_PER_FRAME = 0.005;
+// Flood-hold sits this far above the jitter-target ceiling: beyond it
+// the source is necessarily flooding, so hold exactly 1.0 and let
+// backpressure throttle it instead of accumulating downstream debt.
+const FLOOD_HOLD_MARGIN_MS = 200;
+const FLOOD_EXIT_MARGIN_MS = 200;
+// Arrival gaps beyond this are starvation (idle), not jitter —
+// excluded from the jitter estimate.
+const STARVE_GAP_FACTOR = 8;
+const STARVE_GAP_MIN_MS = 250;
+// Resume after the due-chain falls this far behind: re-anchor to now
+// instead of bursting to repay debt.
+const RESUME_LAG_FACTOR = 4;
+const RESUME_LAG_MIN_MS = 100;
 
 // Per-frame warp for small A/V errors. Small steps converge smoothly;
 // large behind-errors compress progressively (see below) so seconds-scale
@@ -75,7 +78,7 @@ const SYNC_MAX_STRETCH_MS = 100;
 // hurries a frame.
 const TIMER_BIAS_MAX_MS = 3;
 
-function assertBound(name: string, n: number): void {
+function assertNonNegative(name: string, n: number): void {
   if (!Number.isFinite(n) || n < 0)
     throw new RangeError(`${name} must be a finite number >= 0, got ${n}`);
 }
@@ -92,62 +95,68 @@ export class BaseMediaStream extends Writable {
   private _syncStream?: BaseMediaStream;
   private _frameSendDeadlineExceededCount = 0;
 
-  // PTS-anchored timeline: deadline(frame) = t0 + (pts - p0), absolute
-  // per frame — a late timer never shifts the next deadline, so pacing
-  // errors stay bounded. Each stream owns its anchor; a late-joining
-  // stream aligns to the partner's anchor, and the sync trim absorbs
-  // any residual skew.
+  // Wall anchor for the PTS origin — used ONLY for the A/V sync error
+  // (media-elapsed comparison). Pacing itself is self-clocked (due
+  // chain below), so input stalls/bursts can never inject debt.
   private _t0?: number;
   private _p0?: number;
 
-  private _livestreamCatchup = false;
-  private _catchupUpperBoundMs: number = DEFAULT_CATCHUP.upperBoundMs;
-  private _catchupLowerBoundMs: number = DEFAULT_CATCHUP.lowerBoundMs;
-  // Schmitt latch: engaged at >= upper, released at <= lower, held in
-  // between — prevents on/off chatter around a single threshold.
-  private _catchupEngaged = false;
-  private _catchupSpeedupFactor: number = DEFAULT_CATCHUP.speedupFactor;
-  private _catchupMinFactor: number = DEFAULT_CATCHUP.minFactor;
-  private _catchupSlowdownFactor: number = DEFAULT_CATCHUP.slowdownFactor;
+  // --- Adaptive jitter buffer ---
+  // Target queued media adapts to measured input burstiness; the
+  // playout rate seros the actual queue toward it. Steady realtime
+  // input → target sits at the floor (low latency, fast volume
+  // response). Bursty input → target grows to cover the gaps.
+  // Flooding input (ffmpeg faster than realtime) → queue pins deep,
+  // flood-hold clamps the rate to exactly 1.0 and backpressure
+  // throttles the source. No regime ever drops frames or steps the
+  // rate, so bursty HLS meters out smoothly instead of rubber-banding.
+  private _jitterMinBufferMs: number = DEFAULT_JITTER.minBufferMs;
+  private _jitterMaxBufferMs: number = DEFAULT_JITTER.maxBufferMs;
+  private _jitterGain: number = DEFAULT_JITTER.gain;
+  private _minPlayoutRate: number = DEFAULT_JITTER.minRate;
+  private _maxPlayoutRate: number = DEFAULT_JITTER.maxRate;
+  private _jitterMs = 0;
+  private _targetBufferMs: number = DEFAULT_JITTER.minBufferMs;
+  private _playoutRate = 1;
+  private _floodHold = false;
+  private _nextDueMs?: number;
+  private _lastArrivalMs?: number;
+  private _lastArrivalPtsMs?: number;
   // Smoothed frame interval (ms), seeded ~33ms so call sites never deal
   // with undefined. Survives resetTimingState; adapts within a few frames
   // if content changes.
-  private _avgFrametime: number = CATCHUP_REF_FRAMETIME_MS;
+  private _avgFrametime: number = REF_FRAMETIME_MS;
   // EMAs of send cost and timer overshoot, used to center sends on the
   // deadline without extra wakeups.
   private _sendEmaMs = 0;
   private _timerBiasEmaMs = 0;
 
   constructor(type: string, options: BaseMediaStreamOptions = {}) {
-    super({ objectMode: true, highWaterMark: 128 });
+    // Small buffers bound worst-case stale media (volume latency):
+    // flooding sources pin here and backpressure throttles ffmpeg.
+    // Audio stays tighter — volume changes are heard through it.
+    super({
+      objectMode: true,
+      highWaterMark: type === "audio" ? 40 : 64,
+    });
     this._loggerSend = new Log(`stream:${type}:send`);
     this._loggerSync = new Log(`stream:${type}:sync`);
     this._loggerSleep = new Log(`stream:${type}:sleep`);
     const {
       noSleep = false,
-      livestreamCatchup = false,
-      catchupUpperBoundMs = DEFAULT_CATCHUP.upperBoundMs,
-      catchupLowerBoundMs = DEFAULT_CATCHUP.lowerBoundMs,
-      catchupSpeedupFactor = DEFAULT_CATCHUP.speedupFactor,
-      catchupMinFactor = DEFAULT_CATCHUP.minFactor,
-      catchupSlowdownFactor = DEFAULT_CATCHUP.slowdownFactor,
+      jitterMinBufferMs = DEFAULT_JITTER.minBufferMs,
+      jitterMaxBufferMs = DEFAULT_JITTER.maxBufferMs,
+      jitterGain = DEFAULT_JITTER.gain,
+      minPlayoutRate = DEFAULT_JITTER.minRate,
+      maxPlayoutRate = DEFAULT_JITTER.maxRate,
     } = options;
     this._noSleep = noSleep;
-    this._livestreamCatchup = livestreamCatchup;
-    // Bounds: validate individually, cross-check as a pair, then assign
-    // directly — going through the setters first would compare each
-    // bound against the other's default and reject valid pairs.
-    assertBound("catchupUpperBoundMs", catchupUpperBoundMs);
-    assertBound("catchupLowerBoundMs", catchupLowerBoundMs);
-    if (catchupLowerBoundMs > catchupUpperBoundMs)
-      throw new RangeError(
-        `catchupLowerBoundMs (${catchupLowerBoundMs}) must be <= catchupUpperBoundMs (${catchupUpperBoundMs})`,
-      );
-    this._catchupUpperBoundMs = catchupUpperBoundMs;
-    this._catchupLowerBoundMs = catchupLowerBoundMs;
-    this.catchupSpeedupFactor = catchupSpeedupFactor;
-    this.catchupMinFactor = catchupMinFactor;
-    this.catchupSlowdownFactor = catchupSlowdownFactor;
+    this.jitterMinBufferMs = jitterMinBufferMs;
+    this.jitterMaxBufferMs = jitterMaxBufferMs;
+    this.jitterGain = jitterGain;
+    this.minPlayoutRate = minPlayoutRate;
+    this.maxPlayoutRate = maxPlayoutRate;
+    this._targetBufferMs = this._jitterMinBufferMs;
   }
 
   get sync(): boolean {
@@ -186,65 +195,73 @@ export class BaseMediaStream extends Writable {
       );
     this._syncTolerance = n;
   }
-  get livestreamCatchup(): boolean {
-    return this._livestreamCatchup;
+  get jitterMinBufferMs(): number {
+    return this._jitterMinBufferMs;
   }
-  set livestreamCatchup(val: boolean) {
-    // Any toggle starts fresh: disengaged, re-arms at the upper bound.
-    if (this._livestreamCatchup !== val) this._catchupEngaged = false;
-    this._livestreamCatchup = val;
-  }
-  get catchupUpperBoundMs(): number {
-    return this._catchupUpperBoundMs;
-  }
-  set catchupUpperBoundMs(n: number) {
-    assertBound("catchupUpperBoundMs", n);
-    if (n < this._catchupLowerBoundMs)
+  set jitterMinBufferMs(n: number) {
+    assertNonNegative("jitterMinBufferMs", n);
+    if (n > this._jitterMaxBufferMs)
       throw new RangeError(
-        `catchupUpperBoundMs (${n}) must be >= catchupLowerBoundMs (${this._catchupLowerBoundMs})`,
+        `jitterMinBufferMs (${n}) must be <= jitterMaxBufferMs (${this._jitterMaxBufferMs})`,
       );
-    this._catchupUpperBoundMs = n;
+    this._jitterMinBufferMs = n;
+    this._targetBufferMs = Math.max(this._targetBufferMs, n);
   }
-  get catchupLowerBoundMs(): number {
-    return this._catchupLowerBoundMs;
+  get jitterMaxBufferMs(): number {
+    return this._jitterMaxBufferMs;
   }
-  set catchupLowerBoundMs(n: number) {
-    assertBound("catchupLowerBoundMs", n);
-    if (n > this._catchupUpperBoundMs)
+  set jitterMaxBufferMs(n: number) {
+    assertNonNegative("jitterMaxBufferMs", n);
+    if (n < this._jitterMinBufferMs)
       throw new RangeError(
-        `catchupLowerBoundMs (${n}) must be <= catchupUpperBoundMs (${this._catchupUpperBoundMs})`,
+        `jitterMaxBufferMs (${n}) must be >= jitterMinBufferMs (${this._jitterMinBufferMs})`,
       );
-    this._catchupLowerBoundMs = n;
+    this._jitterMaxBufferMs = n;
+    this._targetBufferMs = Math.min(this._targetBufferMs, n);
   }
-  get catchupSpeedupFactor(): number {
-    return this._catchupSpeedupFactor;
+  get jitterGain(): number {
+    return this._jitterGain;
   }
-  set catchupSpeedupFactor(n: number) {
-    if (!Number.isFinite(n) || n <= 0 || n >= 1)
+  set jitterGain(n: number) {
+    if (!Number.isFinite(n) || n < 0)
+      throw new RangeError(`jitterGain must be a finite number >= 0, got ${n}`);
+    this._jitterGain = n;
+  }
+  get minPlayoutRate(): number {
+    return this._minPlayoutRate;
+  }
+  set minPlayoutRate(n: number) {
+    if (!Number.isFinite(n) || n <= 0 || n > 1)
       throw new RangeError(
-        `catchupSpeedupFactor must be a finite number in (0, 1), got ${n}`,
+        `minPlayoutRate must be a finite number in (0, 1], got ${n}`,
       );
-    this._catchupSpeedupFactor = n;
+    this._minPlayoutRate = n;
   }
-  get catchupMinFactor(): number {
-    return this._catchupMinFactor;
+  get maxPlayoutRate(): number {
+    return this._maxPlayoutRate;
   }
-  set catchupMinFactor(n: number) {
-    if (!Number.isFinite(n) || n <= 0 || n >= 1)
+  set maxPlayoutRate(n: number) {
+    if (!Number.isFinite(n) || n < 1 || n > 4)
       throw new RangeError(
-        `catchupMinFactor must be a finite number in (0, 1), got ${n}`,
+        `maxPlayoutRate must be a finite number in [1, 4], got ${n}`,
       );
-    this._catchupMinFactor = n;
+    this._maxPlayoutRate = n;
   }
-  get catchupSlowdownFactor(): number {
-    return this._catchupSlowdownFactor;
+  /** Current smoothed playout rate (media s per wall s). */
+  get playoutRate(): number {
+    return this._playoutRate;
   }
-  set catchupSlowdownFactor(n: number) {
-    if (!Number.isFinite(n) || n <= 0)
-      throw new RangeError(
-        `catchupSlowdownFactor must be a finite number > 0, got ${n}`,
-      );
-    this._catchupSlowdownFactor = n;
+  /** Current adaptive buffer target (media ms). */
+  get targetBufferMs(): number {
+    return this._targetBufferMs;
+  }
+  /** Current input-burstiness estimate (ms). */
+  get jitterMs(): number {
+    return this._jitterMs;
+  }
+  /** Currently queued media behind the in-flight frame (ms). */
+  get bufferMs(): number {
+    return this.writableLength * this._avgFrametime;
   }
   protected async _sendFrame(
     _frame: Buffer,
@@ -252,15 +269,20 @@ export class BaseMediaStream extends Writable {
   ): Promise<void> {
     throw new Error("Not implemented");
   }
-  // P-controller gain: speedup per ms of backlog above the lower bound.
-  private get _catchupSpeedupGainPerMs(): number {
-    return (1 - this._catchupSpeedupFactor) / CATCHUP_REF_FRAMETIME_MS;
+  private get _floodHoldLevelMs(): number {
+    return this._jitterMaxBufferMs + FLOOD_HOLD_MARGIN_MS;
   }
   private resetTimingState() {
     this._t0 = undefined;
     this._p0 = undefined;
     this._pts = undefined;
-    this._catchupEngaged = false;
+    this._nextDueMs = undefined;
+    this._lastArrivalMs = undefined;
+    this._lastArrivalPtsMs = undefined;
+    this._jitterMs = 0;
+    this._targetBufferMs = this._jitterMinBufferMs;
+    this._playoutRate = 1;
+    this._floodHold = false;
   }
 
   // A/V sync error: this stream's media elapsed minus partner's last
@@ -273,6 +295,33 @@ export class BaseMediaStream extends Writable {
     if (other._pts === undefined || !Number.isFinite(other._pts))
       return undefined;
     return ownPtsMs - this._p0 - (other._pts - other._p0);
+  }
+
+  // Observe input pacing: asymmetric-EMA jitter on |arrival gap - PTS
+  // gap|, ignoring starvation idles. Retunes the buffer target.
+  private _observeInput(nowMs: number, ptsMs: number): void {
+    const lastT = this._lastArrivalMs;
+    const lastP = this._lastArrivalPtsMs;
+    this._lastArrivalMs = nowMs;
+    this._lastArrivalPtsMs = ptsMs;
+    if (lastT === undefined || lastP === undefined) return;
+    const arrivalGapMs = nowMs - lastT;
+    const starveMs = Math.max(
+      STARVE_GAP_MIN_MS,
+      STARVE_GAP_FACTOR * this._avgFrametime,
+    );
+    if (arrivalGapMs < 0 || arrivalGapMs >= starveMs) return;
+    const sampleMs = Math.abs(arrivalGapMs - (ptsMs - lastP));
+    if (!Number.isFinite(sampleMs)) return;
+    const alpha = sampleMs > this._jitterMs ? 0.25 : 0.03;
+    this._jitterMs += alpha * (sampleMs - this._jitterMs);
+    this._targetBufferMs = Math.min(
+      this._jitterMaxBufferMs,
+      Math.max(
+        this._jitterMinBufferMs,
+        this._jitterMinBufferMs + this._jitterGain * this._jitterMs,
+      ),
+    );
   }
 
   async _write(
@@ -295,6 +344,8 @@ export class BaseMediaStream extends Writable {
     const ptsMs = (Number(pts) / timeBase.den) * timeBase.num * 1000;
     const timingValid =
       Number.isFinite(ptsMs) && Number.isFinite(frametime) && frametime > 0;
+    const arrivalMs = performance.now();
+    if (timingValid) this._observeInput(arrivalMs, ptsMs);
 
     // Copy out and release native memory before pacing: a frame can be
     // held for a full frametime before it is sent.
@@ -344,8 +395,9 @@ export class BaseMediaStream extends Writable {
     }
 
     const nowMs = performance.now();
+    const avg = this._avgFrametime;
 
-    // First frame or PTS discontinuity (seek/loop/wrap): rebase and
+    // First frame or PTS discontinuity (seek/loop/wrap): anchor and
     // send immediately. Never rebase on mere lateness.
     if (this._t0 === undefined || this._p0 === undefined) {
       // Late joiner: the partner is already running, so align this
@@ -355,12 +407,12 @@ export class BaseMediaStream extends Writable {
       const anchor = this._syncStream?._t0;
       this._t0 = nowMs;
       this._p0 = anchor === undefined ? ptsMs : ptsMs - (nowMs - anchor);
+      this._nextDueMs = nowMs;
       await sendAndPublish();
       callback(null);
       return;
     }
     const lastPts = this._pts;
-    const avg = this._avgFrametime;
     const jumpLimit = Math.max(1000, avg * 10);
     if (
       lastPts !== undefined &&
@@ -372,26 +424,72 @@ export class BaseMediaStream extends Writable {
       );
       this._p0 = ptsMs;
       this._t0 = nowMs;
+      // Fresh timeline: drop learned input state, restart the due
+      // chain now — no debt, no burst.
+      this._nextDueMs = nowMs;
+      this._lastArrivalMs = nowMs;
+      this._lastArrivalPtsMs = ptsMs;
+      this._jitterMs = 0;
+      this._targetBufferMs = this._jitterMinBufferMs;
+      this._playoutRate = 1;
+      this._floodHold = false;
       await sendAndPublish();
       callback(null);
       return;
     }
 
-    // --- Nominal deadline ---
-    const nominalMs = this._t0 + (ptsMs - this._p0);
-    const sleepMs = nominalMs - nowMs - this._sendEmaMs - this._timerBiasEmaMs;
+    // --- Buffer servo ---
+    // Error drives a P-controller; flood-hold pins the rate at exactly
+    // 1.0 once the queue proves the source is flooding (backpressure
+    // then throttles it — the alternative, sustained >1 output,
+    // accumulates unbounded downstream debt). Every rate change is
+    // slew-limited below, so playout never steps.
+    const bufferMs = this.writableLength * avg;
+    if (!this._floodHold && bufferMs >= this._floodHoldLevelMs) {
+      this._floodHold = true;
+      this._loggerSleep.debug(
+        { stats: { bufferMs, levelMs: this._floodHoldLevelMs } },
+        "Input flooding: holding playout at 1.0x, backpressure throttles source",
+      );
+    } else if (
+      this._floodHold &&
+      bufferMs <= this._floodHoldLevelMs - FLOOD_EXIT_MARGIN_MS
+    ) {
+      this._floodHold = false;
+      this._loggerSleep.debug(
+        { stats: { bufferMs, levelMs: this._floodHoldLevelMs } },
+        "Flood drained: resuming buffer servo",
+      );
+    }
+    const errorMs = bufferMs - this._targetBufferMs;
+    const rawRate = this._floodHold
+      ? 1
+      : Math.min(
+          this._maxPlayoutRate,
+          Math.max(this._minPlayoutRate, 1 + RATE_GAIN_PER_MS * errorMs),
+        );
+    const step = Math.min(
+      RATE_SLEW_PER_FRAME,
+      Math.max(-RATE_SLEW_PER_FRAME, rawRate - this._playoutRate),
+    );
+    this._playoutRate += step;
+    const rate = this._playoutRate;
 
     // --- A/V sync trim ---
     // Ahead → stretch (slow down), capped so a far-ahead stream never
     // parks. Behind → compress (hurry) progressively, ~25% of error per
     // frame — fast convergence without skipping, preserving the
-    // inter-frame reference chain.
+    // inter-frame reference chain. Additive on this frame only; the
+    // servo absorbs any resulting buffer offset via feedback.
     let syncTrimMs = 0;
     const syncErrorMs = this._syncErrorMs(ptsMs);
     if (
       syncErrorMs !== undefined &&
       Math.abs(syncErrorMs) > this._syncTolerance
     ) {
+      // Nominal sleep before trim, for the compress ceiling below.
+      const due0 = this._nextDueMs ?? nowMs;
+      const sleepMs = due0 + frametime / rate - nowMs;
       if (syncErrorMs > 0) {
         const warpCapMs = SYNC_MAX_WARP_FRACTION * frametime;
         syncTrimMs = Math.min(
@@ -405,128 +503,48 @@ export class BaseMediaStream extends Writable {
           behindExcessMs * 0.25,
           SYNC_MAX_WARP_FRACTION * frametime,
         );
-        // Ceil at 75% of sleepMs: non-negative wait, max ~4x fast-forward
-        // per frame. When already late (sleepMs <= 0), compress = 0.
+        // Ceil at 75% of sleep: non-negative wait, max ~4x fast-forward
+        // per frame. When already late (sleep <= 0), compress = 0.
         const maxCompressMs = sleepMs > 0 ? 0.75 * sleepMs : 0;
         syncTrimMs = -Math.min(behindExcessMs, behindWantMs, maxCompressMs);
       }
     }
 
-    // --- Livestream catchup trim: hysteretic 3-zone queue regulator ---
-    // backlogMs is media-time so audio (20ms) and video (33ms) behave
-    // identically. Zones: >= upper → speed up (Schmitt latch, released
-    // at <= lower so transient queues never trigger speedup and a drain
-    // is never abandoned early); between the bounds → hold; below the
-    // lower bound → slow down proportionally to the deficit so input
-    // refills the queue (with PTS-absolute deadlines this manifests as
-    // a send-phase offset ≈ the settled queue depth, i.e. a jitter
-    // buffer with bounded added latency). No accumulation anywhere —
-    // nominal deadlines stay absolute.
-    let catchupSpeedupMs = 0;
-    let catchupSlowdownMs = 0;
-    if (this._livestreamCatchup) {
-      const backlogMs = this.writableLength * avg;
-      if (backlogMs <= this._catchupLowerBoundMs) this._catchupEngaged = false;
-      else if (backlogMs >= this._catchupUpperBoundMs)
-        this._catchupEngaged = true;
-      if (this._catchupEngaged && sleepMs > 0) {
-        const excessMs = backlogMs - this._catchupLowerBoundMs;
-        const speedup = Math.min(
-          1 - this._catchupMinFactor,
-          excessMs * this._catchupSpeedupGainPerMs,
-        );
-        if (speedup > 0) catchupSpeedupMs = sleepMs * speedup;
-      } else if (!this._catchupEngaged) {
-        // Shallow queue: stretch this frame so input accumulates during
-        // the wait. Mutually exclusive with speedup (the latch always
-        // releases at <= lower before we get here). Capped at the lower
-        // bound so a single wait never exceeds the configured depth.
-        const deficitMs = this._catchupLowerBoundMs - backlogMs;
-        if (deficitMs > 0)
-          catchupSlowdownMs = Math.min(
-            this._catchupLowerBoundMs,
-            deficitMs * this._catchupSlowdownFactor,
-          );
-      }
-    }
-
-    // Suppress stretch when there's backlog to drain or lateness to
-    // absorb — draining beats aligning. Symmetrically, AV sync beats
-    // buffer rebuild: hurrying (behind the partner) must not be
-    // cancelled out by a shallow-queue stretch.
-    if (
-      syncTrimMs > 0 &&
-      (catchupSpeedupMs > 0 || sleepMs - catchupSpeedupMs <= 0)
-    ) {
-      syncTrimMs = 0;
-    }
-    if (syncTrimMs < 0) catchupSlowdownMs = 0;
+    // --- Due chain ---
+    // Self-clocked: each frame is due one (rate-adjusted) frametime
+    // after the previous due. After a starvation gap the chain would
+    // sit permanently behind, so re-anchor to now — resume, don't repay.
+    const resumeLagMs = Math.max(RESUME_LAG_MIN_MS, RESUME_LAG_FACTOR * avg);
+    let dueMs = this._nextDueMs;
+    if (dueMs === undefined || nowMs - dueMs > resumeLagMs) dueMs = nowMs;
+    dueMs += frametime / rate;
+    this._nextDueMs = dueMs;
 
     const targetMs =
-      nominalMs -
-      this._sendEmaMs -
-      this._timerBiasEmaMs +
-      syncTrimMs -
-      catchupSpeedupMs +
-      catchupSlowdownMs;
+      dueMs - this._sendEmaMs - this._timerBiasEmaMs + syncTrimMs;
 
     if (this._loggerSleep.enabled.trace) {
       this._loggerSleep.trace(
         {
           stats: {
             pts: ptsMs,
-            nominalMs,
-            sleepMs,
+            bufferMs,
+            targetBufferMs: this._targetBufferMs,
+            jitterMs: this._jitterMs,
+            rate,
+            floodHold: this._floodHold,
             syncErrorMs,
             syncTrimMs,
-            catchupSpeedupMs,
-            catchupEngaged: this._catchupEngaged,
-            catchupSlowdownMs,
             targetMs,
             frametime,
           },
         },
         `Sleeping for ${Math.max(0, targetMs - nowMs).toFixed(2)}ms`,
       );
-    } else if (this._loggerSync.enabled.debug && syncTrimMs !== 0) {
-      this._loggerSync.debug(
-        { stats: { pts: ptsMs, syncErrorMs, syncTrimMs, frametime } },
-        syncTrimMs > 0
-          ? "Stream is ahead. Stretching sleep for this frame"
-          : "Stream is behind. Compressing sleep for this frame",
-      );
-    } else if (this._loggerSleep.enabled.debug && catchupSpeedupMs > 0) {
-      this._loggerSleep.debug(
-        {
-          stats: {
-            pts: ptsMs,
-            queueLength: this.writableLength,
-            backlogMs: this.writableLength * avg,
-            frametime,
-            sleepMs,
-            catchupSpeedupMs,
-          },
-        },
-        `Livestream catchup: queue backed up. Sleeping for ${(sleepMs - catchupSpeedupMs).toFixed(2)}ms instead of ${sleepMs.toFixed(2)}ms`,
-      );
-    } else if (this._loggerSleep.enabled.debug && catchupSlowdownMs > 0) {
-      this._loggerSleep.debug(
-        {
-          stats: {
-            pts: ptsMs,
-            queueLength: this.writableLength,
-            backlogMs: this.writableLength * avg,
-            frametime,
-            sleepMs,
-            catchupSlowdownMs,
-          },
-        },
-        `Livestream catchup: queue below lower bound. Sleeping ${catchupSlowdownMs.toFixed(2)}ms longer`,
-      );
     }
 
-    // One timer per frame. Late frames send immediately; PTS-absolute
-    // deadline keeps lateness bounded per frame.
+    // One timer per frame. Late frames send immediately; the due chain
+    // re-anchors (above) instead of accumulating debt.
     const waitMs = targetMs - performance.now();
     if (waitMs > 0) {
       await setTimeout(waitMs);

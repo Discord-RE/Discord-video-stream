@@ -445,12 +445,6 @@ export type PlayStreamOptions = {
   readrateInitialBurst: number | undefined;
 
   /**
-   * Enable livestream catchup mode, which temporarily increases FPS when too
-   * many frames are in the queue
-   */
-  livestreamCatchup: boolean | undefined;
-
-  /**
    * Enable stream preview from input stream (experimental)
    */
   streamPreview: boolean;
@@ -474,7 +468,6 @@ export async function playStream(
     height: (video) => video.height,
     frameRate: (video) => video.framerate_num / video.framerate_den,
     readrateInitialBurst: undefined,
-    livestreamCatchup: false,
     streamPreview: false,
   } satisfies PlayStreamOptions;
 
@@ -507,9 +500,6 @@ export async function playStream(
         opts.readrateInitialBurst > 0
           ? opts.readrateInitialBurst
           : defaultOptions.readrateInitialBurst,
-
-      livestreamCatchup:
-        opts.livestreamCatchup ?? defaultOptions.livestreamCatchup,
 
       streamPreview: opts.streamPreview ?? defaultOptions.streamPreview,
     } satisfies PlayStreamOptions;
@@ -556,14 +546,10 @@ export async function playStream(
     ),
   });
 
-  const vStream = new VideoStream(conn, {
-    livestreamCatchup: mergedOptions.livestreamCatchup ?? false,
-  });
+  const vStream = new VideoStream(conn);
   video.stream.pipe(vStream);
   if (audio) {
-    const aStream = new AudioStream(conn, {
-      livestreamCatchup: mergedOptions.livestreamCatchup ?? false,
-    });
+    const aStream = new AudioStream(conn);
     audio.stream.pipe(aStream);
     vStream.syncStream = aStream;
 
