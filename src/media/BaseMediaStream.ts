@@ -2,6 +2,16 @@ import { Writable } from "node:stream";
 import { setTimeout } from "node:timers/promises";
 import { Log } from "debug-level";
 import type { Packet } from "node-av";
+import YoctoQueue from "yocto-queue";
+
+// One arrived frame waiting in our own queue (see below).
+type QueuedFrame = {
+  buf: Buffer;
+  ptsMs: number;
+  frametime: number;
+  frameSize: number;
+  timed: boolean;
+};
 
 export type BaseMediaStreamOptions = {
   noSleep?: boolean;
@@ -30,6 +40,16 @@ export type BaseMediaStreamOptions = {
    * Fastest playout rate, in [1, 4]. Caps how fast deep queues drain.
    */
   maxPlayoutRate?: number;
+  /**
+   * Queue headroom above the jitter target before upstream is
+   * throttled (media ms). The highWaterMark tracks
+   * target + headroom + jitter, so a fast upstream shrinks the
+   * buffer (low latency) while a bursty one re-opens room to absorb
+   * bursts where the servo can see them. Defaults: 150 audio / 400
+   * video (video bursts are burstier — keyframes — and a stalled
+   * video pipe head-of-line-blocks audio in the shared demux loop).
+   */
+  bufferHeadroomMs?: number;
 };
 
 // Frame interval seed (~33ms @ 30fps) so call sites never deal with
@@ -65,6 +85,17 @@ const STARVE_GAP_MIN_MS = 250;
 const RESUME_LAG_FACTOR = 4;
 const RESUME_LAG_MIN_MS = 100;
 
+// Static highWaterMark ceilings (packets): absolute caps on queued
+// media. The dynamic HWM below never exceeds these.
+const HWM_MAX_FRAMES_AUDIO = 40;
+const HWM_MAX_FRAMES_VIDEO = 64;
+// Default headroom above the jitter target before throttling upstream.
+const HWM_HEADROOM_AUDIO_MS = 150;
+const HWM_HEADROOM_VIDEO_MS = 400;
+// The dynamic HWM never drops below target + this many frametimes —
+// throttling below the target would starve the servo (pinned negative
+// error → pinned minimum rate).
+const HWM_MIN_MARGIN_FRAMES = 2;
 // Per-frame warp for small A/V errors. Small steps converge smoothly;
 // large behind-errors compress progressively (see below) so seconds-scale
 // gaps converge fast without dropping frames.
@@ -102,19 +133,27 @@ export class BaseMediaStream extends Writable {
   private _p0?: number;
 
   // --- Adaptive jitter buffer ---
+  // Frames queue in our own yocto-queue — Node's internal buffer is
+  // bypassed (HWM 0) so queue depth is exact and backpressure is ours
+  // to exert: intake withholds write callbacks at the dynamic HWM
+  // instead of mutating Node internals. A pump loop sends queued
+  // frames in arrival order at the paced rate.
   // Target queued media adapts to measured input burstiness; the
   // playout rate seros the actual queue toward it. Steady realtime
   // input → target sits at the floor (low latency, fast volume
   // response). Bursty input → target grows to cover the gaps.
-  // Flooding input (ffmpeg faster than realtime) → queue pins deep,
-  // flood-hold clamps the rate to exactly 1.0 and backpressure
-  // throttles the source. No regime ever drops frames or steps the
-  // rate, so bursty HLS meters out smoothly instead of rubber-banding.
+  // Flooding input (ffmpeg faster than realtime) → queue pins at the
+  // (shrinking) dynamic HWM, flood-hold clamps the rate to exactly
+  // 1.0 and backpressure throttles the source. No regime ever drops
+  // frames or steps the rate, so bursty HLS meters out smoothly
+  // instead of rubber-banding.
   private _jitterMinBufferMs: number = DEFAULT_JITTER.minBufferMs;
   private _jitterMaxBufferMs: number = DEFAULT_JITTER.maxBufferMs;
   private _jitterGain: number = DEFAULT_JITTER.gain;
   private _minPlayoutRate: number = DEFAULT_JITTER.minRate;
   private _maxPlayoutRate: number = DEFAULT_JITTER.maxRate;
+  private _bufferHeadroomMs: number = HWM_HEADROOM_AUDIO_MS;
+  private _hwmMaxFrames: number;
   private _jitterMs = 0;
   private _targetBufferMs: number = DEFAULT_JITTER.minBufferMs;
   private _playoutRate = 1;
@@ -122,6 +161,13 @@ export class BaseMediaStream extends Writable {
   private _nextDueMs?: number;
   private _lastArrivalMs?: number;
   private _lastArrivalPtsMs?: number;
+  // Owned buffer + playout pump (see _pump). Intake is synchronous;
+  // at most one write callback is ever withheld (serial _write).
+  private _queue = new YoctoQueue<QueuedFrame>();
+  private _intakeCallback?: (error?: Error | null) => void;
+  private _pumpRunning = false;
+  private _destroyed = false;
+  private _wakePump?: () => void;
   // Smoothed frame interval (ms), seeded ~33ms so call sites never deal
   // with undefined. Survives resetTimingState; adapts within a few frames
   // if content changes.
@@ -132,13 +178,12 @@ export class BaseMediaStream extends Writable {
   private _timerBiasEmaMs = 0;
 
   constructor(type: string, options: BaseMediaStreamOptions = {}) {
-    // Small buffers bound worst-case stale media (volume latency):
-    // flooding sources pin here and backpressure throttles ffmpeg.
-    // Audio stays tighter — volume changes are heard through it.
-    super({
-      objectMode: true,
-      highWaterMark: type === "audio" ? 40 : 64,
-    });
+    const isAudio = type === "audio";
+    // Bypass Node's internal buffer: HWM 0 means every write reports
+    // backpressure, so pipe flow-control is driven entirely by when
+    // intake releases callbacks (verified: drain still fires).
+    // Buffered media lives only in our yocto-queue.
+    super({ objectMode: true, highWaterMark: 0 });
     this._loggerSend = new Log(`stream:${type}:send`);
     this._loggerSync = new Log(`stream:${type}:sync`);
     this._loggerSleep = new Log(`stream:${type}:sleep`);
@@ -149,8 +194,13 @@ export class BaseMediaStream extends Writable {
       jitterGain = DEFAULT_JITTER.gain,
       minPlayoutRate = DEFAULT_JITTER.minRate,
       maxPlayoutRate = DEFAULT_JITTER.maxRate,
+      bufferHeadroomMs,
     } = options;
     this._noSleep = noSleep;
+    this._hwmMaxFrames = isAudio ? HWM_MAX_FRAMES_AUDIO : HWM_MAX_FRAMES_VIDEO;
+    this.bufferHeadroomMs =
+      bufferHeadroomMs ??
+      (isAudio ? HWM_HEADROOM_AUDIO_MS : HWM_HEADROOM_VIDEO_MS);
     this.jitterMinBufferMs = jitterMinBufferMs;
     this.jitterMaxBufferMs = jitterMaxBufferMs;
     this.jitterGain = jitterGain;
@@ -247,6 +297,13 @@ export class BaseMediaStream extends Writable {
       );
     this._maxPlayoutRate = n;
   }
+  get bufferHeadroomMs(): number {
+    return this._bufferHeadroomMs;
+  }
+  set bufferHeadroomMs(n: number) {
+    assertNonNegative("bufferHeadroomMs", n);
+    this._bufferHeadroomMs = n;
+  }
   /** Current smoothed playout rate (media s per wall s). */
   get playoutRate(): number {
     return this._playoutRate;
@@ -259,9 +316,14 @@ export class BaseMediaStream extends Writable {
   get jitterMs(): number {
     return this._jitterMs;
   }
-  /** Currently queued media behind the in-flight frame (ms). */
+  /** Currently queued media (ms) — owned queue plus any Node-internal
+   * backlog (nonzero only when the producer ignores backpressure). */
   get bufferMs(): number {
-    return this.writableLength * this._avgFrametime;
+    return (this._queue.size + this.writableLength) * this._avgFrametime;
+  }
+  /** Currently queued frames. */
+  get queueSize(): number {
+    return this._queue.size;
   }
   protected async _sendFrame(
     _frame: Buffer,
@@ -271,6 +333,69 @@ export class BaseMediaStream extends Writable {
   }
   private get _floodHoldLevelMs(): number {
     return this._jitterMaxBufferMs + FLOOD_HOLD_MARGIN_MS;
+  }
+  // Dynamic highWaterMark (frames): target + headroom + jitter,
+  // floored above the target so the servo never starves, capped at
+  // the static maxima. Intake withholds write callbacks at/above
+  // this level — backpressure via public stream semantics.
+  private _dynamicHwmFrames(): number {
+    const avg = this._avgFrametime;
+    const capMs = this._hwmMaxFrames * avg;
+    const floorMs = Math.min(
+      capMs,
+      this._targetBufferMs + HWM_MIN_MARGIN_FRAMES * avg,
+    );
+    const targetMs = Math.min(
+      capMs,
+      Math.max(
+        floorMs,
+        this._targetBufferMs + this._bufferHeadroomMs + this._jitterMs,
+      ),
+    );
+    return Math.max(2, Math.round(targetMs / avg));
+  }
+  // Release the withheld intake callback once the queue has room.
+  // After end(), hold it until the queue fully drains so 'finish'
+  // can't fire with frames still unsent.
+  private _maybeReleaseIntake(): void {
+    const stashed = this._intakeCallback;
+    if (!stashed) return;
+    if (this._queue.size >= this._dynamicHwmFrames()) return;
+    if (this.writableEnded && this._queue.size > 0) return;
+    this._intakeCallback = undefined;
+    stashed(null);
+  }
+  private _ensurePump(): void {
+    if (this._pumpRunning || this._destroyed) return;
+    this._pumpRunning = true;
+    void this._pump();
+  }
+  // Playout pump: sends queued frames serially in arrival order.
+  // Idles on a gate (no polling) until intake enqueues or destroy
+  // wakes it. Pump errors destroy the stream, mirroring how a throw
+  // inside _write used to surface.
+  private async _pump(): Promise<void> {
+    try {
+      while (!this._destroyed) {
+        const queued = this._queue.dequeue();
+        if (!queued) {
+          await new Promise<void>((resolve) => {
+            this._wakePump = resolve;
+          });
+          this._wakePump = undefined;
+          continue;
+        }
+        try {
+          await this._paceAndSend(queued);
+        } catch (err) {
+          this.destroy(err as Error);
+          return;
+        }
+        this._maybeReleaseIntake();
+      }
+    } finally {
+      this._pumpRunning = false;
+    }
   }
   private resetTimingState() {
     this._t0 = undefined;
@@ -324,6 +449,12 @@ export class BaseMediaStream extends Writable {
     );
   }
 
+  // Intake: parse, observe, enqueue, then release the write callback
+  // now (queue has room) or withhold it (backpressure at the dynamic
+  // HWM). Fully synchronous — serial _write calls can't interleave,
+  // so enqueue + release is atomic with respect to the pump.
+  // Everything (paced, burst, untimed) flows through the queue, so
+  // sends always leave in arrival order.
   async _write(
     frame: Packet,
     _: BufferEncoding,
@@ -337,60 +468,53 @@ export class BaseMediaStream extends Writable {
     }
 
     const frametime = (Number(duration) / timeBase.den) * timeBase.num * 1000;
-    const frameSize = data.length;
     if (Number.isFinite(frametime) && frametime > 0) {
       this._avgFrametime += 0.15 * (frametime - this._avgFrametime);
     }
     const ptsMs = (Number(pts) / timeBase.den) * timeBase.num * 1000;
-    const timingValid =
+    const timed =
       Number.isFinite(ptsMs) && Number.isFinite(frametime) && frametime > 0;
-    const arrivalMs = performance.now();
-    if (timingValid) this._observeInput(arrivalMs, ptsMs);
+    if (timed) this._observeInput(performance.now(), ptsMs);
 
-    // Copy out and release native memory before pacing: a frame can be
-    // held for a full frametime before it is sent.
+    // Copy out and release native memory: the frame may wait in the
+    // queue while earlier frames play out.
     const buf = Buffer.from(data);
     frame.free();
 
-    // Send, then publish PTS for partner sync and listeners. Untimed
-    // frames are sent but never published: garbage PTS would corrupt the
-    // sync timeline.
-    const sendAndPublish = async () => {
-      const sendStart = performance.now();
-      // Always the nominal frametime — pacing warp must never leak
-      // into RTP timestamps.
-      await this._sendFrame(buf, frametime);
-      const sendTime = performance.now() - sendStart;
-      // Clamp top so one slow frame can't bias pacing for long.
-      this._sendEmaMs = Math.min(
-        this._sendEmaMs + 0.1 * (sendTime - this._sendEmaMs),
-        5,
-      );
-      if (timingValid && sendTime > frametime) {
-        this._frameSendDeadlineExceededCount++;
-        if (this._frameSendDeadlineExceededCount > 10) {
-          this._loggerSend.warn(
-            {
-              frame_size: frameSize,
-              duration: sendTime,
-              frametime,
-            },
-            `Frame takes too long to send (${((sendTime / frametime) * 100).toFixed(2)}% frametime)`,
-          );
-        }
-      } else {
-        this._frameSendDeadlineExceededCount = 0;
-      }
-      if (timingValid) {
-        this._pts = ptsMs;
-        this.emit("pts", ptsMs);
-      }
-    };
+    this._queue.enqueue({
+      buf,
+      ptsMs,
+      frametime,
+      frameSize: buf.length,
+      timed,
+    });
+    this._ensurePump();
+    this._wakePump?.();
+    // Single release path (room check + end-hold) — inline here would
+    // let 'finish' fire with frames still queued after end().
+    this._intakeCallback = callback;
+    this._maybeReleaseIntake();
+  }
 
-    if (this._noSleep || !timingValid) {
-      // Burst mode (or untimed frame): drain ASAP.
-      await sendAndPublish();
-      callback(null);
+  // One frame's paced journey: anchor/discontinuity handling, buffer
+  // servo, sync trim, due-chain wait, send + publish. Runs serially in
+  // the pump, so sends always leave in arrival order.
+  private async _paceAndSend(queued: QueuedFrame): Promise<void> {
+    const { buf, ptsMs, frametime, frameSize, timed } = queued;
+
+    if (this._noSleep || !timed) {
+      // Burst mode (or untimed frame): drain ASAP. No pacing, no due
+      // advance — and untimed frames are never published, since
+      // garbage PTS would corrupt the sync timeline.
+      const sendStart = performance.now();
+      await this._sendFrame(buf, frametime);
+      this._noteSendCost(
+        performance.now() - sendStart,
+        frameSize,
+        frametime,
+        timed,
+      );
+      if (timed) this._publishPts(ptsMs);
       return;
     }
 
@@ -408,8 +532,7 @@ export class BaseMediaStream extends Writable {
       this._t0 = nowMs;
       this._p0 = anchor === undefined ? ptsMs : ptsMs - (nowMs - anchor);
       this._nextDueMs = nowMs;
-      await sendAndPublish();
-      callback(null);
+      await this._sendPublishTimed(buf, frametime, frameSize, ptsMs);
       return;
     }
     const lastPts = this._pts;
@@ -433,8 +556,7 @@ export class BaseMediaStream extends Writable {
       this._targetBufferMs = this._jitterMinBufferMs;
       this._playoutRate = 1;
       this._floodHold = false;
-      await sendAndPublish();
-      callback(null);
+      await this._sendPublishTimed(buf, frametime, frameSize, ptsMs);
       return;
     }
 
@@ -444,7 +566,10 @@ export class BaseMediaStream extends Writable {
     // then throttles it — the alternative, sustained >1 output,
     // accumulates unbounded downstream debt). Every rate change is
     // slew-limited below, so playout never steps.
-    const bufferMs = this.writableLength * avg;
+    // Total backlog: owned queue + Node-internal buffer (the latter is
+    // nonzero only when the producer ignores backpressure — otherwise
+    // HWM 0 keeps it empty and this equals the queue alone).
+    const bufferMs = (this._queue.size + this.writableLength) * avg;
     if (!this._floodHold && bufferMs >= this._floodHoldLevelMs) {
       this._floodHold = true;
       this._loggerSleep.debug(
@@ -530,6 +655,8 @@ export class BaseMediaStream extends Writable {
             pts: ptsMs,
             bufferMs,
             targetBufferMs: this._targetBufferMs,
+            dynamicHwmFrames: this._dynamicHwmFrames(),
+            queueSize: this._queue.size,
             jitterMs: this._jitterMs,
             rate,
             floodHold: this._floodHold,
@@ -556,15 +683,75 @@ export class BaseMediaStream extends Writable {
       );
     }
 
-    await sendAndPublish();
-    callback(null);
+    await this._sendPublishTimed(buf, frametime, frameSize, ptsMs);
+  }
+
+  // Timed send: RTP timestamps always use the nominal frametime, then
+  // cost accounting + PTS publish for partner sync and listeners.
+  private async _sendPublishTimed(
+    buf: Buffer,
+    frametime: number,
+    frameSize: number,
+    ptsMs: number,
+  ): Promise<void> {
+    const sendStart = performance.now();
+    // Always the nominal frametime — pacing warp must never leak
+    // into RTP timestamps.
+    await this._sendFrame(buf, frametime);
+    this._noteSendCost(
+      performance.now() - sendStart,
+      frameSize,
+      frametime,
+      true,
+    );
+    this._publishPts(ptsMs);
+  }
+
+  private _noteSendCost(
+    sendTimeMs: number,
+    frameSize: number,
+    frametime: number,
+    timed: boolean,
+  ): void {
+    // Clamp top so one slow frame can't bias pacing for long.
+    this._sendEmaMs = Math.min(
+      this._sendEmaMs + 0.1 * (sendTimeMs - this._sendEmaMs),
+      5,
+    );
+    if (timed && sendTimeMs > frametime) {
+      this._frameSendDeadlineExceededCount++;
+      if (this._frameSendDeadlineExceededCount > 10) {
+        this._loggerSend.warn(
+          {
+            frame_size: frameSize,
+            duration: sendTimeMs,
+            frametime,
+          },
+          `Frame takes too long to send (${((sendTimeMs / frametime) * 100).toFixed(2)}% frametime)`,
+        );
+      }
+    } else {
+      this._frameSendDeadlineExceededCount = 0;
+    }
+  }
+
+  private _publishPts(ptsMs: number): void {
+    this._pts = ptsMs;
+    this.emit("pts", ptsMs);
   }
 
   _destroy(
     error: Error | null,
     callback: (error?: Error | null) => void,
   ): void {
+    this._destroyed = true;
+    const wake = this._wakePump;
+    this._wakePump = undefined;
+    wake?.();
+    const intake = this._intakeCallback;
+    this._intakeCallback = undefined;
     super._destroy(error, callback);
+    intake?.(error ?? undefined);
     this.syncStream = undefined;
   }
 }
