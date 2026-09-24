@@ -116,6 +116,8 @@ export class BaseMediaStream extends Writable {
   private _loggerSend: Log;
   private _loggerSync: Log;
   private _loggerSleep: Log;
+  private _loggerStats: Log;
+  private _statsTimer?: NodeJS.Timeout;
 
   private _noSleep: boolean;
   private _sync = true;
@@ -188,6 +190,7 @@ export class BaseMediaStream extends Writable {
     this._loggerSend = new Log(`stream:${type}:send`);
     this._loggerSync = new Log(`stream:${type}:sync`);
     this._loggerSleep = new Log(`stream:${type}:sleep`);
+    this._loggerStats = new Log(`stream:${type}:stats`);
     const {
       noSleep = false,
       jitterMinBufferMs = DEFAULT_JITTER.minBufferMs,
@@ -205,6 +208,28 @@ export class BaseMediaStream extends Writable {
     this.jitterGain = jitterGain;
     this.minPlayoutRate = minPlayoutRate;
     this.maxPlayoutRate = maxPlayoutRate;
+    // Per-second jitter-buffer status snapshot. unref so the log timer
+    // alone never keeps the process alive.
+    this._statsTimer = setInterval(() => {
+      if (this._destroyed || !this._loggerStats.enabled.debug) return;
+      this._loggerStats.debug(
+        {
+          stats: {
+            bufferMs: this.bufferMs,
+            targetBufferMs: this._targetBufferMs,
+            jitterMs: this._jitterMs,
+            queueSize: this._queue.size,
+            writableLength: this.writableLength,
+            dynamicHwmFrames: this._dynamicHwmFrames(),
+            playoutRate: this._playoutRate,
+            upstreamHold: this._upstreamHold,
+            avgFrametime: this._avgFrametime,
+          },
+        },
+        "Jitter buffer status",
+      );
+    }, 1000);
+    this._statsTimer.unref();
   }
 
   get sync(): boolean {
@@ -728,6 +753,10 @@ export class BaseMediaStream extends Writable {
     // withheld intake. Nothing drains — end()'s finish-hold applies
     // only to a normal end, not destroy.
     this._destroyed = true;
+    if (this._statsTimer) {
+      clearInterval(this._statsTimer);
+      this._statsTimer = undefined;
+    }
     this._abort.abort();
     this._queue.clear();
     const wake = this._wakePump;
