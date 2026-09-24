@@ -68,23 +68,49 @@ const DEFAULT_JITTER = {
   minBufferMs: 30,
   maxBufferMs: 1000,
   gain: 2,
-  minRate: 0.92,
-  maxRate: 1.06,
+  minRate: 0.9,
+  maxRate: 4,
 };
 
-// P-servo gain: +500ms of excess buffer → +5% playout rate. Small on
-// purpose — large corrections come from sustained mild elevation,
-// not from snaps (that's what caused rubber-banding).
-const RATE_GAIN_PER_MS = 0.0001;
-// Slew limit per frame: 1.00 → 1.06 takes ~12 frames (~0.4s video).
-// Every rate change ramps — nothing in the output ever steps.
-const RATE_SLEW_PER_FRAME = 0.005;
+// Unified playout law: rate = 1 + gain(error) * error, smooth in the
+// error (no mode switches, no skipped sleeps). Asymmetric on purpose:
+// shortfall (error < 0) stretches gently and linearly — slowing harder
+// when the queue is already empty only delays the next frame without
+// creating coverage. Backlog (error >= 0) uses a quadratic term on top
+// of the linear one, so the correction is a nudge near the target
+// (+30ms → ~1.04x) and firms up fast further out (+200ms → ~1.9x,
+// +400ms → capped): deep live bursts drain in ~100ms through the
+// normal due chain instead of lingering for seconds (net drain is only
+// rate − 1, which is why a capped-at-1.06x servo pinned RTSP latency
+// high). The cap only ever binds transient backlogs — sustained output
+// can't exceed the input average, since the queue would empty and the
+// error would go negative.
+const RATE_GAIN_UP_PER_MS = 0.0005;
+const RATE_GAIN_UP_QUAD_PER_MS2 = 0.00002;
+const RATE_GAIN_DOWN_PER_MS = 0.0001;
+// Slew per frame: a floor for smoothness near the target plus a
+// proportional term so large rate gaps close geometrically (1.0 → 4.0
+// in ~5 frames) instead of crawling. Still a ramp every frame —
+// nothing in the output ever steps.
+const RATE_SLEW_PER_FRAME = 0.015;
+const RATE_APPROACH_FRACTION = 0.2;
+// Asymmetric EMA weights for the jitter estimate: fast attack tracks
+// sudden burstiness, faster-than-before release lets the buffer target
+// fall back to the floor quickly once a transient (e.g. an RTSP
+// retransmit burst) passes, instead of pinning latency high.
+const JITTER_RISE_ALPHA = 0.25;
+const JITTER_FALL_ALPHA = 0.1;
 // Arrival gaps beyond this are starvation (idle), not jitter —
 // excluded from the jitter estimate.
 const STARVE_GAP_FACTOR = 8;
 const STARVE_GAP_MIN_MS = 250;
 // Resume after the due-chain falls this far behind: re-anchor to now
-// instead of bursting to repay debt.
+// instead of repaying debt — but only when there is (almost) nothing
+// queued. If a backlog exists (e.g. an RTSP burst after a stall), the
+// debt is kept: frames are already late, so they leave immediately
+// through the normal waitMs <= 0 path until the chain catches up to
+// now. That is the live catch-up — no separate mode, just the due
+// chain doing what "late" means.
 const RESUME_LAG_FACTOR = 4;
 const RESUME_LAG_MIN_MS = 100;
 
@@ -104,6 +130,25 @@ const SYNC_MAX_STRETCH_MS = 100;
 // centered on the deadline. Clamped: removes average bias only, never
 // hurries a frame.
 const TIMER_BIAS_MAX_MS = 3;
+
+// --- Upstream flood detector (live vs. faster-than-realtime input) ---
+// EMA of PTS-advance per wall-ms: ~1 for a realtime source (RTSP,
+// camera, `-re` file), >>1 while ffmpeg transcodes a file as fast as
+// the CPU allows. Samples are clamped so a single back-to-back burst
+// (e.g. post-stall RTSP catch-up) can only nudge the average — only a
+// sustained flood pins it high. Converges in frame count, so a flood
+// (frames arrive instantly) is flagged within milliseconds of wall
+// time, while a live burst (tens of frames) never trips it.
+// Starts at RATIO_INIT so a new, unproven source is treated as
+// flooding: files are held at 1.0x from the first frame, and the fast
+// end of the playout law only arms once ~50 steady frames prove the
+// source is realtime (~1.8s video, ~1s audio).
+const RATIO_ALPHA = 0.02;
+const RATIO_SAMPLE_MIN = 0.1;
+const RATIO_SAMPLE_MAX = 2.5;
+const RATIO_INIT = 2.5;
+const FLOOD_ENTER_RATIO = 2.0;
+const FLOOD_EXIT_RATIO = 1.5;
 
 function assertNonNegative(name: string, n: number): void {
   if (!Number.isFinite(n) || n < 0)
@@ -139,12 +184,16 @@ export class BaseMediaStream extends Writable {
   // Target queued media adapts to measured input burstiness; the
   // playout rate steers the actual queue toward it. Steady realtime
   // input → target sits at the floor (low latency, fast volume
-  // response). Bursty input → target grows to cover the gaps.
-  // Flooding input (ffmpeg faster than realtime) → queue pins at the
-  // dynamic HWM, the upstream-hold clamps the rate to exactly 1.0 and
-  // backpressure throttles the source. No regime ever drops
-  // frames or steps the rate, so bursty HLS meters out smoothly
-  // instead of rubber-banding.
+  // response). Bursty input → target grows to cover the gaps, then
+  // falls back fast once the burst passes. The playout law is gentle
+  // near the target and firms up quadratically further out, so a deep
+  // backlog on a realtime source drains through the normal due chain
+  // (late frames leave immediately, paced ones meter out up to 4x)
+  // instead of pinning latency high. Flooding input (ffmpeg faster
+  // than realtime) → queue pins at the dynamic HWM, the
+  // upstream-hold clamps the rate to exactly 1.0 and backpressure
+  // throttles the source. No regime drops frames or steps the rate,
+  // so bursty HLS meters out smoothly instead of rubber-banding.
   private _jitterMinBufferMs: number = DEFAULT_JITTER.minBufferMs;
   private _jitterMaxBufferMs: number = DEFAULT_JITTER.maxBufferMs;
   private _jitterGain: number = DEFAULT_JITTER.gain;
@@ -159,6 +208,11 @@ export class BaseMediaStream extends Writable {
   private _targetBufferMs = 0;
   private _playoutRate = 1;
   private _upstreamHold = false;
+  // Flood detector state: EMA of PTS-advance per wall-ms plus a
+  // hysteresis latch. Starts "flooding" until steady realtime input
+  // proves otherwise (see RATIO_INIT).
+  private _deliveryRatioEma = RATIO_INIT;
+  private _flooding = true;
   private _nextDueMs?: number;
   private _lastArrivalMs?: number;
   private _lastArrivalPtsMs?: number;
@@ -166,6 +220,15 @@ export class BaseMediaStream extends Writable {
   // at most one write callback is ever withheld (serial _write).
   private _queue = new YoctoQueue<QueuedFrame>();
   private _intakeCallback?: (error?: Error | null) => void;
+  // Set while a dequeued frame is being paced/sent. Together with the
+  // queue size it tells _final (see below) whether playout is done.
+  private _inflight = false;
+  // end() callback, held until every accepted frame has actually been
+  // sent. Node fires _final as soon as the last _write callback runs,
+  // but a fast-draining pump may already have released all intake
+  // while 1–2 frames are still paced/in-flight — without this hold,
+  // 'finish' would fire early and autoDestroy would drop the tail.
+  private _finalCallback?: (error?: Error | null) => void;
   private _pumpRunning = false;
   private _destroyed = false;
   private _wakePump?: () => void;
@@ -401,15 +464,19 @@ export class BaseMediaStream extends Writable {
           this._wakePump = undefined;
           continue;
         }
+        this._inflight = true;
         try {
           await this._paceAndSend(queued);
         } catch (err) {
+          this._inflight = false;
           // AbortError here means destroy() raced the pacing sleep —
           // teardown already handled it; only fresh errors re-destroy.
           if (!this._destroyed) this.destroy(err as Error);
           return;
         }
+        this._inflight = false;
         this._maybeReleaseIntake();
+        this._checkFinal();
       }
     } finally {
       this._pumpRunning = false;
@@ -426,6 +493,8 @@ export class BaseMediaStream extends Writable {
     this._targetBufferMs = this._jitterMinBufferMs;
     this._playoutRate = 1;
     this._upstreamHold = false;
+    this._deliveryRatioEma = RATIO_INIT;
+    this._flooding = true;
   }
 
   // A/V sync error: this stream's media elapsed minus partner's last
@@ -441,7 +510,9 @@ export class BaseMediaStream extends Writable {
   }
 
   // Observe input pacing: asymmetric-EMA jitter on |arrival gap - PTS
-  // gap|, ignoring starvation idles. Retunes the buffer target.
+  // gap|, ignoring starvation idles. Retunes the buffer target. Also
+  // feeds the flood detector: the ratio of PTS-advance to wall-advance
+  // tells realtime sources (~1) apart from faster-than-realtime floods.
   private _observeInput(nowMs: number, ptsMs: number): void {
     const lastT = this._lastArrivalMs;
     const lastP = this._lastArrivalPtsMs;
@@ -454,9 +525,11 @@ export class BaseMediaStream extends Writable {
       STARVE_GAP_FACTOR * this._avgFrametime,
     );
     if (arrivalGapMs < 0 || arrivalGapMs >= starveMs) return;
-    const sampleMs = Math.abs(arrivalGapMs - (ptsMs - lastP));
+    const ptsGapMs = ptsMs - lastP;
+    const sampleMs = Math.abs(arrivalGapMs - ptsGapMs);
     if (!Number.isFinite(sampleMs)) return;
-    const alpha = sampleMs > this._jitterMs ? 0.25 : 0.03;
+    const alpha =
+      sampleMs > this._jitterMs ? JITTER_RISE_ALPHA : JITTER_FALL_ALPHA;
     this._jitterMs += alpha * (sampleMs - this._jitterMs);
     this._targetBufferMs = Math.min(
       this._jitterMaxBufferMs,
@@ -465,6 +538,22 @@ export class BaseMediaStream extends Writable {
         this._jitterMinBufferMs + this._jitterGain * this._jitterMs,
       ),
     );
+    // Flood detector: back-to-back frames (arrival << PTS gap) sample
+    // high, realtime frames sample ~1. Starvation idles are excluded
+    // above, so a stall followed by a burst only nudges the average —
+    // only a sustained flood pins it.
+    if (ptsGapMs > 0 && arrivalGapMs > 0) {
+      const sample = Math.min(
+        RATIO_SAMPLE_MAX,
+        Math.max(RATIO_SAMPLE_MIN, ptsGapMs / arrivalGapMs),
+      );
+      this._deliveryRatioEma += RATIO_ALPHA * (sample - this._deliveryRatioEma);
+      if (this._flooding) {
+        if (this._deliveryRatioEma < FLOOD_EXIT_RATIO) this._flooding = false;
+      } else if (this._deliveryRatioEma > FLOOD_ENTER_RATIO) {
+        this._flooding = true;
+      }
+    }
   }
 
   // Intake: parse, observe, enqueue, then release the write callback
@@ -563,35 +652,54 @@ export class BaseMediaStream extends Writable {
     }
 
     // --- Buffer servo ---
-    // Error drives a P-controller. While an intake callback is
-    // withheld, upstream is delivering faster than we drain (otherwise
-    // the queue would have room) — so hold exactly 1.0 and let
-    // backpressure throttle it. The alternative, sustained >1 output,
-    // accumulates unbounded downstream debt. The hold self-clears when
-    // the pump drains below the dynamic HWM and releases intake, and
-    // every rate change is slew-limited below, so playout never steps.
+    // Error drives a P-controller. While an intake callback is withheld
+    // AND upstream is proven faster than realtime (flood detector),
+    // upstream is delivering faster than we drain (otherwise the queue
+    // would have room) — so hold exactly 1.0 and let backpressure
+    // throttle it. The alternative, sustained >1 output, accumulates
+    // unbounded downstream debt. The hold is deliberately NOT applied
+    // to a throttled-but-realtime source (e.g. an RTSP burst): holding
+    // 1.0x there just pushes the queue upstream into ffmpeg/network
+    // buffers while end-to-end latency stays high. The hold self-clears
+    // when the pump drains below the dynamic HWM and releases intake,
+    // and every rate change is slew-limited below, so playout never
+    // steps.
     const bufferMs = this.bufferMs;
     const throttled = this._intakeCallback !== undefined;
-    if (throttled !== this._upstreamHold) {
-      this._upstreamHold = throttled;
+    const hold = throttled && this._flooding;
+    if (hold !== this._upstreamHold) {
+      this._upstreamHold = hold;
       this._loggerSleep.debug(
         { stats: { bufferMs, queueSize: this._queue.size } },
-        throttled
+        hold
           ? "Upstream outrunning playout: holding 1.0x, backpressure throttles source"
           : "Intake released: resuming buffer servo",
       );
     }
     const errorMs = bufferMs - this._targetBufferMs;
+    // Unified playout law — one smooth function of the buffer error,
+    // no catch-up mode. Linear below the target (gentle stretch),
+    // linear + quadratic above it (a nudge near the target, up to the
+    // cap far away so deep backlogs drain fast through the due chain).
+    const correction =
+      errorMs >= 0
+        ? RATE_GAIN_UP_PER_MS * errorMs +
+          RATE_GAIN_UP_QUAD_PER_MS2 * errorMs * errorMs
+        : RATE_GAIN_DOWN_PER_MS * errorMs;
     const rawRate = this._upstreamHold
       ? 1
       : Math.min(
           this._maxPlayoutRate,
-          Math.max(this._minPlayoutRate, 1 + RATE_GAIN_PER_MS * errorMs),
+          Math.max(this._minPlayoutRate, 1 + correction),
         );
-    const step = Math.min(
+    // Slew with a proportional term: small gaps close at the gentle
+    // floor rate, large ones geometrically — fast convergence far from
+    // the target, still a ramp every frame, never a step.
+    const slew = Math.max(
       RATE_SLEW_PER_FRAME,
-      Math.max(-RATE_SLEW_PER_FRAME, rawRate - this._playoutRate),
+      RATE_APPROACH_FRACTION * Math.abs(rawRate - this._playoutRate),
     );
+    const step = Math.min(slew, Math.max(-slew, rawRate - this._playoutRate));
     this._playoutRate += step;
     const rate = this._playoutRate;
 
@@ -632,11 +740,21 @@ export class BaseMediaStream extends Writable {
 
     // --- Due chain ---
     // Self-clocked: each frame is due one (rate-adjusted) frametime
-    // after the previous due. After a starvation gap the chain would
-    // sit permanently behind, so re-anchor to now — resume, don't repay.
+    // after the previous due. When the chain falls far behind with
+    // (almost) nothing queued, that lag is idle time, so re-anchor to
+    // now — resume, don't repay. But when a backlog exists, the lag is
+    // debt owed to queued frames: keep it, and each late frame leaves
+    // immediately (waitMs <= 0 below) until the chain catches back up
+    // to now. Late-frame immediacy plus the quadratic rate above is the
+    // whole live catch-up — delivered by the main pacing path, with
+    // sync trim and cost compensation still applied.
     const resumeLagMs = Math.max(RESUME_LAG_MIN_MS, RESUME_LAG_FACTOR * avg);
     let dueMs = this._nextDueMs;
-    if (dueMs === undefined || nowMs - dueMs > resumeLagMs) dueMs = nowMs;
+    if (
+      dueMs === undefined ||
+      (nowMs - dueMs > resumeLagMs && bufferMs <= this._targetBufferMs)
+    )
+      dueMs = nowMs;
     dueMs += frametime / rate;
     this._nextDueMs = dueMs;
 
@@ -655,6 +773,8 @@ export class BaseMediaStream extends Writable {
             jitterMs: this._jitterMs,
             rate,
             upstreamHold: this._upstreamHold,
+            flooding: this._flooding,
+            deliveryRatio: this._deliveryRatioEma,
             syncErrorMs,
             syncTrimMs,
             targetMs,
@@ -759,13 +879,38 @@ export class BaseMediaStream extends Writable {
     }
     this._abort.abort();
     this._queue.clear();
+    this._inflight = false;
     const wake = this._wakePump;
     this._wakePump = undefined;
     wake?.();
     const intake = this._intakeCallback;
     this._intakeCallback = undefined;
+    // A pending end() can never complete after destroy: release it with
+    // the destroy error (mirrors the intake release above) so 'finish'
+    // waiters don't hang. With no error this is a silent release —
+    // 'finish' is suppressed on destroyed streams.
+    const final = this._finalCallback;
+    this._finalCallback = undefined;
     super._destroy(error, callback);
     intake?.(error ?? undefined);
+    final?.(error ?? undefined);
     this.syncStream = undefined;
+  }
+
+  // end() barrier: Node calls this once the last _write flushed, but
+  // queued/in-flight frames may still be unsent — hold 'finish' until
+  // the pump actually drains them.
+  _final(callback: (error?: Error | null) => void): void {
+    this._finalCallback = callback;
+    this._checkFinal();
+  }
+
+  // Release a pending end() once playout is fully drained.
+  private _checkFinal(): void {
+    const final = this._finalCallback;
+    if (!final) return;
+    if (this._queue.size > 0 || this._inflight) return;
+    this._finalCallback = undefined;
+    final(null);
   }
 }
