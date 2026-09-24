@@ -547,9 +547,11 @@ export async function playStream(
   });
 
   const vStream = new VideoStream(conn);
+  cleanupFuncs.push(() => vStream.destroy());
   video.stream.pipe(vStream);
   if (audio) {
     const aStream = new AudioStream(conn);
+    cleanupFuncs.push(() => aStream.destroy());
     audio.stream.pipe(aStream);
     vStream.syncStream = aStream;
 
