@@ -35,9 +35,12 @@ type BlockEvent = {
  *    observed blocking, so transient stalls don't permanently add latency.
  * 2. `outputRate` - a speed factor applied to the output clock. When the
  *    buffer holds more media than the target the clock runs slightly fast,
- *    when it holds less it runs slightly slow. This keeps the buffer centred
- *    on the target without ever needing to know what kind of source is
- *    attached.
+ *    when it holds less it runs slightly slow. Speedup past realtime is
+ *    only used when fresh arrivals show the input running at ~realtime
+ *    (e.g. draining a live source's startup burst); a sustained
+ *    faster-than-realtime input is paced at realtime instead and throttled
+ *    via backpressure. This keeps the buffer centred on the target without
+ *    ever needing to know what kind of source is attached.
  *
  * Backpressure is applied once the buffered media exceeds the target by a
  * margin, which throttles fast (VOD/file) inputs down to ~1x media speed.
@@ -73,6 +76,8 @@ export class BaseMediaStream extends Writable {
   // --- Input observation state ---
   private _lastArrivalWall?: number;
   private _lastArrivalPts?: number;
+  /** Trailing (wall, pts) samples used to estimate input speed. */
+  private _speedSamples: { wall: number; pts: number }[] = [];
   private _blockEvents: BlockEvent[] = [];
   private _lastDecayTick = performance.now();
 
@@ -106,12 +111,22 @@ export class BaseMediaStream extends Writable {
   /** Starvation shorter than this is treated as normal jitter, not blocking. */
   private static readonly UNDERFLOW_THRESHOLD_MS = 150;
   private static readonly MIN_RATE = 0.85;
-  /** Max rate used for gentle draining near the target. */
-  private static readonly MAX_RATE_GENTLE = 1.15;
-  /** Buffer excess above which speedup saturates back to realtime. */
-  private static readonly RATE_SATURATION_MS = 1000;
+  /** Max rate used to drain a buffered excess back towards the target. */
+  private static readonly MAX_RATE_DRAIN = 1.5;
   /** Proportional control time constant: error / this => rate offset. */
-  private static readonly RATE_TIME_CONSTANT_MS = 2_000;
+  private static readonly RATE_TIME_CONSTANT_MS = 1_000;
+  /** Trailing window over which input speed is estimated. Kept short so a
+   * startup burst stops dominating the estimate quickly once the input
+   * settles (burst samples age out within one window). */
+  private static readonly SPEED_WINDOW_MS = 750;
+  /** Minimum wall span needed for a usable speed estimate. */
+  private static readonly SPEED_MIN_SPAN_MS = 200;
+  /** Arrivals older than this are stale; speed is unknown during gaps. */
+  private static readonly SPEED_FRESH_MS = 500;
+  /** Above this input speed the input is faster than realtime (VOD-like). */
+  private static readonly SPEED_FAST = 1.3;
+  /** Below this input speed the input is slower than realtime. */
+  private static readonly SPEED_SLOW = 0.8;
   private static readonly DECAY_INTERVAL_MS = 5_000;
   private static readonly BLOCK_WINDOW_MS = 60_000;
 
@@ -256,7 +271,18 @@ export class BaseMediaStream extends Writable {
     const mediaAdvance = pts - lastPts;
     // A discontinuity (seek, track switch) resets the observation baseline
     // instead of polluting it.
-    if (Math.abs(mediaAdvance) > 30_000) return;
+    if (Math.abs(mediaAdvance) > 30_000) {
+      this._speedSamples.length = 0;
+      return;
+    }
+    // Trailing window for input-speed estimation.
+    this._speedSamples.push({ wall: now, pts });
+    while (
+      this._speedSamples.length > 1 &&
+      now - this._speedSamples[0].wall > BaseMediaStream.SPEED_WINDOW_MS
+    ) {
+      this._speedSamples.shift();
+    }
     const wallGap = now - lastWall;
     // How far the input fell behind the media timeline between these two
     // packets. Steady/fast inputs (live, VOD) sit at ~0 or below; a bursty
@@ -328,25 +354,43 @@ export class BaseMediaStream extends Writable {
     }
   }
 
+  /**
+   * Estimated input speed (media ms per wall-clock ms) over the trailing
+   * window, or undefined when unknown: too few samples, or no fresh
+   * arrivals (input idle, e.g. an HLS segment gap).
+   */
+  private get inputSpeed(): number | undefined {
+    const samples = this._speedSamples;
+    if (samples.length < 2) return undefined;
+    const first = samples[0];
+    const last = samples[samples.length - 1];
+    const wallSpan = last.wall - first.wall;
+    if (wallSpan < BaseMediaStream.SPEED_MIN_SPAN_MS) return undefined;
+    if (performance.now() - last.wall > BaseMediaStream.SPEED_FRESH_MS)
+      return undefined;
+    const mediaSpan = last.pts - first.pts;
+    if (mediaSpan < 0) return undefined;
+    return mediaSpan / wallSpan;
+  }
+
   /** Proportional controller: steer the buffer level towards the target. */
   private updateOutputRate() {
     const excess = this._bufferedMs - this._targetDelayMs;
-    let desired: number;
-    if (excess >= BaseMediaStream.RATE_SATURATION_MS) {
-      // Buffer far above target: the input is simply faster than realtime.
-      // Backpressure (not speedup) handles the excess; pace at realtime.
-      desired = 1;
-    } else if (excess >= 0) {
-      // Mild excess: drain gently towards the target.
-      desired =
-        1 +
-        (excess / BaseMediaStream.RATE_SATURATION_MS) *
-          (BaseMediaStream.MAX_RATE_GENTLE - 1);
-    } else {
-      // Below target: slow down to preserve what is buffered.
-      desired = 1 + excess / BaseMediaStream.RATE_TIME_CONSTANT_MS;
-      desired = Math.max(BaseMediaStream.MIN_RATE, desired);
-    }
+    const speed = this.inputSpeed;
+    // Drain a buffered excess faster than realtime only when fresh arrivals
+    // show the input running at ~realtime (e.g. a live source after an
+    // initial burst). A sustained faster-than-realtime input (VOD), a slower
+    // input, or no fresh input at all (segment gap) paces at realtime
+    // instead; backpressure / the buffered media absorbs the difference.
+    // Judging by buffer level alone would strand a transient burst's latency
+    // in the buffer forever, mistaking a live stream for VOD.
+    const realtimeInput =
+      speed !== undefined &&
+      speed >= BaseMediaStream.SPEED_SLOW &&
+      speed <= BaseMediaStream.SPEED_FAST;
+    const maxRate = realtimeInput ? BaseMediaStream.MAX_RATE_DRAIN : 1;
+    let desired = 1 + excess / BaseMediaStream.RATE_TIME_CONSTANT_MS;
+    desired = Math.min(maxRate, Math.max(BaseMediaStream.MIN_RATE, desired));
     // Smooth to avoid oscillation; the buffer integrates the rate anyway.
     this._outputRate += (desired - this._outputRate) * 0.15;
   }
