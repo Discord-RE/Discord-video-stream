@@ -167,6 +167,9 @@ export class BaseMediaStream extends Writable {
   private _pumpRunning = false;
   private _destroyed = false;
   private _wakePump?: () => void;
+  // Aborted on destroy so an in-flight pacing sleep rejects instead of
+  // waking up and sending a frame after teardown.
+  private _abort = new AbortController();
   // Smoothed frame interval (ms), seeded ~33ms so call sites never deal
   // with undefined. Survives resetTimingState; adapts within a few frames
   // if content changes.
@@ -376,7 +379,9 @@ export class BaseMediaStream extends Writable {
         try {
           await this._paceAndSend(queued);
         } catch (err) {
-          this.destroy(err as Error);
+          // AbortError here means destroy() raced the pacing sleep —
+          // teardown already handled it; only fresh errors re-destroy.
+          if (!this._destroyed) this.destroy(err as Error);
           return;
         }
         this._maybeReleaseIntake();
@@ -636,10 +641,11 @@ export class BaseMediaStream extends Writable {
     }
 
     // One timer per frame. Late frames send immediately; the due chain
-    // re-anchors (above) instead of accumulating debt.
+    // re-anchors (above) instead of accumulating debt. Abortable: on
+    // destroy the sleep rejects so no frame is sent after teardown.
     const waitMs = targetMs - performance.now();
     if (waitMs > 0) {
-      await setTimeout(waitMs);
+      await setTimeout(waitMs, undefined, { signal: this._abort.signal });
       const lateMs = performance.now() - targetMs;
       const sampleMs = Math.min(Math.max(lateMs, 0), 10);
       this._timerBiasEmaMs = Math.min(
@@ -708,6 +714,7 @@ export class BaseMediaStream extends Writable {
   }
 
   private _publishPts(ptsMs: number): void {
+    if (this._destroyed) return;
     this._pts = ptsMs;
     this.emit("pts", ptsMs);
   }
@@ -716,7 +723,13 @@ export class BaseMediaStream extends Writable {
     error: Error | null,
     callback: (error?: Error | null) => void,
   ): void {
+    // Teardown is immediate: kill the pacing sleep, drop every queued
+    // frame, wake the pump (loop exits on _destroyed), release any
+    // withheld intake. Nothing drains — end()'s finish-hold applies
+    // only to a normal end, not destroy.
     this._destroyed = true;
+    this._abort.abort();
+    this._queue.clear();
     const wake = this._wakePump;
     this._wakePump = undefined;
     wake?.();
