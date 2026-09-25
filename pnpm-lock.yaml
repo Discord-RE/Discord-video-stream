@@ -18,8 +18,8 @@ importers:
         specifier: ^4.1.1
         version: 4.1.1(supports-color@7.2.0)
       fluent-ffmpeg-simplified:
-        specifier: ^0.2.0
-        version: 0.2.0
+        specifier: ^0.3.0
+        version: 0.3.0
       node-av:
         specifier: ^6.1.1
         version: 6.1.1(supports-color@7.2.0)
@@ -870,8 +870,8 @@ packages:
   flatstr@1.0.12:
     resolution: {integrity: sha512-4zPxDyhCyiN2wIAtSLI6gc82/EjqZc1onI4Mz/l0pWrAlsSfYH/2ZIcU+e3oA2wDwbzIWNKwa23F8rh6+DRWkw==}
 
-  fluent-ffmpeg-simplified@0.2.0:
-    resolution: {integrity: sha512-Y94YMO8HeIZ7tjaGR+srfY+Glu8uJ5HFBr8puvSYhJC6RXWlL+FPe3mJ9QtJkLc1euc0XHKCZL3ARnaVs65yxQ==}
+  fluent-ffmpeg-simplified@0.3.0:
+    resolution: {integrity: sha512-YqrpfoPs+Wo9s5yJGr3ZpRKXQ5aHD1jT0gr+4RjsDLQUsR3W6PHNFUft8248PcIcE+LtHeEu1g9+yQuWsEVOwg==}
 
   fs-extra@11.3.1:
     resolution: {integrity: sha512-eXvGGwZ5CL17ZSwHWd3bbgk7UUpF6IFHtP57NYYakPvHOs8GDgDe5KJI36jIJzDkJ6eJjuzRA8eBQb6SkKue0g==}
@@ -1031,8 +1031,15 @@ packages:
     resolution: {integrity: sha512-2eznPJP8z2BFLX50tf0LuODrpINqP1RVIm/CObbTcBRITQgmC/TjcREF1NeTBzIcR5XO/ukWo+YHOjBbFwIupg==}
     hasBin: true
 
+  node-addon-api@7.1.1:
+    resolution: {integrity: sha512-5m3bsyrjFWE1xf7nz7YXdN4udnVtXK6/Yfgn5qnahL6bCkf2yKt4k3nuTKAtT4r3IG8JNR2ncsIMdZuAzJjHQQ==}
+
   node-av@6.1.1:
     resolution: {integrity: sha512-nuj2cpAelVZQ8hWJB26i9wYIPI/l+GzIAw8zbZuepFpq52khjYQ8s5S+Qi2cG1D+zjb7TYx7QqKpiZH32tqo2A==}
+
+  node-gyp-build@4.8.4:
+    resolution: {integrity: sha512-LA4ZjwlnUblHVgq0oBF3Jl/6h/Nvs5fzBLwdEF4nuxnFdsfajde4WfxtJr3CaiH+F6ewcIB/q4jQ4UzPyid+CQ==}
+    hasBin: true
 
   node-int64@0.4.0:
     resolution: {integrity: sha512-O5lz91xSOeoXP6DulyHfllpq+Eg00MWitZIbtPfoSEvqIHdl5gfcY6hYzDWnj0qD5tz52PI08u9qUvSVeUBeHw==}
@@ -1167,6 +1174,10 @@ packages:
   signal-exit@4.1.0:
     resolution: {integrity: sha512-bzyZ1e88w9O1iNJbKnOlvYTrWPDl46O1bG0D3XInv+9tkPrxrN8jUUTiFlDkkmKWgn1M6CfIA13SuGqOa9Korw==}
     engines: {node: '>=14'}
+
+  sockopt@2.0.1:
+    resolution: {integrity: sha512-C+Pb4hMrwWmY/f34xf/Yhc1MZmfvWJUqoCNC95jiMutPdZLcRinVcmrbq3dqeN3j7ziO5KC1MjM3fq2n/FZLuA==}
+    engines: {node: '>=18'}
 
   sonic-boom@4.2.1:
     resolution: {integrity: sha512-w6AxtubXa2wTXAUsZMMWERrsIRAdrK0Sc+FUytWvYAhBJLyuI4llrMIC1DtlNSdI99EI86KZum2MMq3EAZlF9Q==}
@@ -2071,9 +2082,10 @@ snapshots:
 
   flatstr@1.0.12: {}
 
-  fluent-ffmpeg-simplified@0.2.0:
+  fluent-ffmpeg-simplified@0.3.0:
     dependencies:
       execa: 9.6.1
+      sockopt: 2.0.1
       string-argv: 0.3.2
 
   fs-extra@11.3.1:
@@ -2200,6 +2212,8 @@ snapshots:
       thunky: 1.1.0
     optional: true
 
+  node-addon-api@7.1.1: {}
+
   node-av@6.1.1(supports-color@7.2.0):
     dependencies:
       unzipper: 0.12.5
@@ -2215,6 +2229,8 @@ snapshots:
       werift: 0.23.0(supports-color@7.2.0)
     transitivePeerDependencies:
       - supports-color
+
+  node-gyp-build@4.8.4: {}
 
   node-int64@0.4.0: {}
 
@@ -2340,6 +2356,11 @@ snapshots:
   shebang-regex@3.0.0: {}
 
   signal-exit@4.1.0: {}
+
+  sockopt@2.0.1:
+    dependencies:
+      node-addon-api: 7.1.1
+      node-gyp-build: 4.8.4
 
   sonic-boom@4.2.1:
     dependencies:
