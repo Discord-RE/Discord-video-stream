@@ -44,6 +44,10 @@ type BlockEvent = {
  *
  * Backpressure is applied once the buffered media exceeds the target by a
  * margin, which throttles fast (VOD/file) inputs down to ~1x media speed.
+ * The margin shrinks once the input proves sustained faster-than-realtime,
+ * keeping steady-state pipeline latency low; bursty/idle inputs keep a
+ * larger headroom. Intermediate stream buffers are kept shallow on purpose
+ * so this media-time-aware queue stays the single governor of latency.
  *
  * A/V sync is layered on top: a stream with `syncStream` set treats the
  * other stream as the master clock (in practice video syncs to audio) and
@@ -78,6 +82,12 @@ export class BaseMediaStream extends Writable {
   private _lastArrivalPts?: number;
   /** Trailing (wall, pts) samples used to estimate input speed. */
   private _speedSamples: { wall: number; pts: number }[] = [];
+  /**
+   * Wall time of the last genuine input stall (block event). Recent stalls
+   * prove the input needs burst headroom; otherwise the margin stays lean
+   * so steady-state pipeline latency (e.g. volume-command latency) stays low.
+   */
+  private _lastBlockWall = 0;
   private _blockEvents: BlockEvent[] = [];
   private _lastDecayTick = performance.now();
 
@@ -103,9 +113,18 @@ export class BaseMediaStream extends Writable {
 
   private static readonly MIN_TARGET_MS = 30;
   private static readonly MAX_TARGET_MS = 15_000;
-  private static readonly MIN_CAP_MS = 2_000;
+  private static readonly MIN_CAP_MS = 500;
   private static readonly MAX_CAP_MS = 30_000;
+  /**
+   * Burst headroom above the target, granted only after genuine input stalls
+   * proved it necessary (HLS segment gaps, jittery live). Otherwise the lean
+   * base margin applies so steady-state latency stays low from the start.
+   */
   private static readonly CAP_MARGIN_MS = 4_000;
+  /** Lean base headroom: just enough for the rate controller to work with. */
+  private static readonly CAP_MARGIN_LOW_MS = 500;
+  /** How long a stall keeps the large headroom before it decays. */
+  private static readonly MARGIN_HOLD_MS = 10_000;
   /** Waits longer than this while starved count as input blocking. */
   private static readonly BLOCK_EVENT_THRESHOLD_MS = 250;
   /** Starvation shorter than this is treated as normal jitter, not blocking. */
@@ -121,6 +140,12 @@ export class BaseMediaStream extends Writable {
   private static readonly SPEED_WINDOW_MS = 750;
   /** Minimum wall span needed for a usable speed estimate. */
   private static readonly SPEED_MIN_SPAN_MS = 200;
+  /**
+   * Arrivals are trusted for speedup only below this inter-arrival gap.
+   * Throttled input runs at release pace (bursts + long stalls), so its
+   * average can masquerade as realtime while its gaps give it away.
+   */
+  private static readonly DRAIN_MAX_GAP_MS = 300;
   /** Arrivals older than this are stale; speed is unknown during gaps. */
   private static readonly SPEED_FRESH_MS = 500;
   /** Above this input speed the input is faster than realtime (VOD-like). */
@@ -131,7 +156,11 @@ export class BaseMediaStream extends Writable {
   private static readonly BLOCK_WINDOW_MS = 60_000;
 
   constructor(type: string, noSleep = false) {
-    super({ objectMode: true, highWaterMark: 512 });
+    // Small object count: this stream's media-time-aware queue (plus
+    // backpressure) is the single governor of buffering. A deep Writable
+    // buffer would park seconds of media invisibly inside the stream and
+    // inflate pipeline latency (e.g. volume-command latency on VOD).
+    super({ objectMode: true, highWaterMark: 16 });
     this._loggerSend = new Log(`stream:${type}:send`);
     this._loggerSync = new Log(`stream:${type}:sync`);
     this._loggerSleep = new Log(`stream:${type}:sleep`);
@@ -219,13 +248,26 @@ export class BaseMediaStream extends Writable {
     this._outputRate = 1;
   }
 
+  private get capMarginMs(): number {
+    // Large headroom only shortly after a proven stall (bursty/idle input
+    // needs room to absorb bursts and ride out gaps). Otherwise stay lean:
+    // steady-state pipeline latency (and e.g. volume-command latency) is set
+    // by how much media we allow to stand, so a fast input is throttled
+    // close to the target from the very start.
+    if (
+      this._lastBlockWall !== 0 &&
+      performance.now() - this._lastBlockWall <
+        BaseMediaStream.MARGIN_HOLD_MS
+    ) {
+      return BaseMediaStream.CAP_MARGIN_MS;
+    }
+    return BaseMediaStream.CAP_MARGIN_LOW_MS;
+  }
+
   private get bufferCapMs() {
     return Math.min(
       BaseMediaStream.MAX_CAP_MS,
-      Math.max(
-        BaseMediaStream.MIN_CAP_MS,
-        this._targetDelayMs + BaseMediaStream.CAP_MARGIN_MS,
-      ),
+      Math.max(BaseMediaStream.MIN_CAP_MS, this._targetDelayMs + this.capMarginMs),
     );
   }
 
@@ -298,6 +340,8 @@ export class BaseMediaStream extends Writable {
     if (waitedMs < BaseMediaStream.BLOCK_EVENT_THRESHOLD_MS) return;
     const now = performance.now();
     this._blockEvents.push({ at: now, waited: waitedMs });
+    // A proven stall earns burst headroom for a while (see capMarginMs).
+    this._lastBlockWall = now;
     // Grow the target so the buffer covers the observed stall (plus margin),
     // e.g. a full HLS segment fetch gap.
     const candidate = waitedMs * 1.25 + 100;
@@ -373,21 +417,39 @@ export class BaseMediaStream extends Writable {
     return mediaSpan / wallSpan;
   }
 
+  /**
+   * Largest inter-arrival wall gap in the trailing window, or undefined when
+   * too sparse to say. Bursty or throttled input shows large gaps even when
+   * its average speed reads realtime.
+   */
+  private get maxArrivalGap(): number | undefined {
+    const samples = this._speedSamples;
+    if (samples.length < 2) return undefined;
+    let max = 0;
+    for (let i = 1; i < samples.length; i++) {
+      max = Math.max(max, samples[i].wall - samples[i - 1].wall);
+    }
+    return max;
+  }
+
   /** Proportional controller: steer the buffer level towards the target. */
   private updateOutputRate() {
     const excess = this._bufferedMs - this._targetDelayMs;
     const speed = this.inputSpeed;
     // Drain a buffered excess faster than realtime only when fresh arrivals
-    // show the input running at ~realtime (e.g. a live source after an
-    // initial burst). A sustained faster-than-realtime input (VOD), a slower
-    // input, or no fresh input at all (segment gap) paces at realtime
+    // show a smooth ~realtime input (e.g. a live source after an initial
+    // burst). A sustained faster-than-realtime input (VOD), a slower input,
+    // idle gaps, or bursty/throttled arrivals (large inter-arrival gaps give
+    // those away even when their average reads realtime) pace at realtime
     // instead; backpressure / the buffered media absorbs the difference.
     // Judging by buffer level alone would strand a transient burst's latency
     // in the buffer forever, mistaking a live stream for VOD.
+    const gap = this.maxArrivalGap;
     const realtimeInput =
       speed !== undefined &&
       speed >= BaseMediaStream.SPEED_SLOW &&
-      speed <= BaseMediaStream.SPEED_FAST;
+      speed <= BaseMediaStream.SPEED_FAST &&
+      (gap === undefined || gap < BaseMediaStream.DRAIN_MAX_GAP_MS);
     const maxRate = realtimeInput ? BaseMediaStream.MAX_RATE_DRAIN : 1;
     let desired = 1 + excess / BaseMediaStream.RATE_TIME_CONSTANT_MS;
     desired = Math.min(maxRate, Math.max(BaseMediaStream.MIN_RATE, desired));
