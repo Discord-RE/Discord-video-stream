@@ -290,6 +290,15 @@ export function prepareStream(
   // general output options
   command.output(output).format("nut");
 
+  command.outputOptions([
+    "-flush_packets",
+    "1",
+    "-max_interleave_delta",
+    "100000",
+    "-max_muxing_queue_size",
+    "128",
+  ]);
+
   // video setup
   const {
     noTranscoding,
