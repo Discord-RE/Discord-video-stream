@@ -445,6 +445,17 @@ export type PlayStreamOptions = {
   readrateInitialBurst: number | undefined;
 
   /**
+   * Declare the input a live stream (RTSP/RTMP/HLS), enabling the adaptive
+   * jitter buffer: the buffer grows across input stalls (e.g. HLS segment
+   * fetch gaps) and decays back when the input is stable.
+   *
+   * Default false assumes file/VOD input: pacing is frozen at realtime with
+   * a minimal buffer (backpressure still throttles the input; A/V sync keeps
+   * working).
+   */
+  isLive: boolean;
+
+  /**
    * Enable stream preview from input stream (experimental)
    */
   streamPreview: boolean;
@@ -468,6 +479,7 @@ export async function playStream(
     height: (video) => video.height,
     frameRate: (video) => video.framerate_num / video.framerate_den,
     readrateInitialBurst: undefined,
+    isLive: false,
     streamPreview: false,
   } satisfies PlayStreamOptions;
 
@@ -502,6 +514,8 @@ export async function playStream(
           : defaultOptions.readrateInitialBurst,
 
       streamPreview: opts.streamPreview ?? defaultOptions.streamPreview,
+
+      isLive: opts.isLive ?? defaultOptions.isLive,
     } satisfies PlayStreamOptions;
   }
 
@@ -546,10 +560,10 @@ export async function playStream(
     ),
   });
 
-  const vStream = new VideoStream(conn);
+  const vStream = new VideoStream(conn, false, mergedOptions.isLive);
   video.stream.pipe(vStream);
   if (audio) {
-    const aStream = new AudioStream(conn);
+    const aStream = new AudioStream(conn, false, mergedOptions.isLive);
     audio.stream.pipe(aStream);
     vStream.syncStream = aStream;
 

@@ -4,8 +4,8 @@ import { BaseMediaStream } from "./BaseMediaStream.js";
 export class AudioStream extends BaseMediaStream {
   private _conn: WebRtcConnWrapper;
 
-  constructor(conn: WebRtcConnWrapper, noSleep = false) {
-    super("audio", noSleep);
+  constructor(conn: WebRtcConnWrapper, noSleep = false, isLive = false) {
+    super("audio", noSleep, isLive);
     this._conn = conn;
   }
 

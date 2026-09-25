@@ -12,170 +12,146 @@ type QueuedFrame = {
   frametime: number;
 };
 
-type BlockEvent = {
-  at: number;
-  waited: number;
-};
+type BlockEvent = { at: number; waited: number };
 
 /**
- * Jitter-buffer style pacer for media output.
+ * Adaptive jitter-buffer pacer for live / pseudo-live media output.
  *
- * Instead of assuming the input always arrives faster than real-time and
- * blindly sleeping until the next PTS is due, this implementation observes
- * the *input pacing* (packet arrival times vs. media timestamps) and adapts
- * two things:
+ * Instead of assuming the input outpaces the clock, it observes input pacing
+ * (arrival wall time vs. media time) and adapts two knobs:
  *
- * 1. `targetDelay` - the desired jitter buffer level (in media ms). It starts
- *    small (<50ms) and only grows when the output actually starves, i.e. the
- *    playout loop has to wait for input. True live sources (RTSP/RTMP) and
- *    fast files (VOD) never starve a small buffer, so they keep a low
- *    (<50ms) buffer. Bursty pseudo-live sources (HLS) stall for whole segment
- *    durations, so the buffer grows until it covers (at least) one segment.
- *    The target slowly decays back towards a floor derived from recently
- *    observed blocking, so transient stalls don't permanently add latency.
- * 2. `outputRate` - a speed factor applied to the output clock. When the
- *    buffer holds more media than the target the clock runs slightly fast,
- *    when it holds less it runs slightly slow. Speedup past realtime is
- *    only used when fresh arrivals show the input running at ~realtime
- *    (e.g. draining a live source's startup burst); a sustained
- *    faster-than-realtime input is paced at realtime instead and throttled
- *    via backpressure. This keeps the buffer centred on the target without
- *    ever needing to know what kind of source is attached.
+ * - `targetDelay`: desired buffer level (media ms). Starts minimal; grows
+ *   when output actually starves (block events, e.g. HLS segment fetch
+ *   gaps), decays toward a floor derived from recent blocking. Smooth live
+ *   sources stay at ~30ms; bursty sources earn ~one segment of headroom.
+ * - `outputRate`: proportional correction of the playout clock around 1x.
+ *   Above-realtime drain is only allowed while arrivals look fresh, smooth
+ *   and ~realtime (a startup burst); anything else paces at 1x and lets
+ *   backpressure absorb the difference.
  *
- * Backpressure is applied once the buffered media exceeds the target by a
- * margin, which throttles fast (VOD/file) inputs down to ~1x media speed.
- * The margin shrinks once the input proves sustained faster-than-realtime,
- * keeping steady-state pipeline latency low; bursty/idle inputs keep a
- * larger headroom. Intermediate stream buffers are kept shallow on purpose
- * so this media-time-aware queue stays the single governor of latency.
+ * Backpressure holds `_write` callbacks once media exceeds target + margin
+ * (lean margin, temporarily widened after proven stalls), throttling
+ * ahead-of-realtime input to ~1x. Intermediate stream buffers stay shallow
+ * so this media-time queue is the single governor of pipeline latency.
  *
- * A/V sync is layered on top: a stream with `syncStream` set treats the
- * other stream as the master clock (in practice video syncs to audio) and
- * stretches/shrinks its own playout delay to stay within `syncTolerance`.
+ * A/V sync: with `syncStream` set, this stream skews its playout *rate*
+ * (never jumps the clock), so the media-time offset to the master decays
+ * gradually within `syncTolerance`.
+ *
+ * File/VOD input (sustained faster-than-realtime by nature) is out of scope
+ * for the adaptation: unless `isLive` is set, the target stays at its
+ * minimum and the rate at 1x, keeping only backpressure and A/V sync.
  */
 export class BaseMediaStream extends Writable {
   private _pts?: number;
-  private _syncTolerance = 20;
-  private _loggerSend: Log;
-  private _loggerSync: Log;
-  private _loggerSleep: Log;
-  private _loggerBuffer: Log;
-
-  private _noSleep: boolean;
   private _sync = true;
+  private _syncTolerance = 20;
   private _syncStream?: BaseMediaStream;
+  private _syncEngaged = false;
+  private _noSleep: boolean;
+  private readonly _isLive: boolean;
 
-  // --- Jitter buffer state ---
+  private readonly _lgSend: Log;
+  private readonly _lgSync: Log;
+  private readonly _lgSleep: Log;
+  private readonly _lgBuffer: Log;
+
+  // Jitter buffer state.
   private readonly _queue = new Queue<QueuedFrame>();
-  /** Media time currently buffered, in milliseconds */
   private _bufferedMs = 0;
-  /** Desired buffer level, in milliseconds. Adapted at runtime. */
   private _targetDelayMs: number;
-  /** Smoothed output speed factor. >1 drains the buffer, <1 fills it. */
   private _outputRate = 1;
-  /** Wall-clock time (performance.now) the next frame is due. */
   private _nextPlayoutTime?: number;
   private _lastFrametime = 20;
 
-  // --- Input observation state ---
+  // Input observation state.
   private _lastArrivalWall?: number;
   private _lastArrivalPts?: number;
-  /** Trailing (wall, pts) samples used to estimate input speed. */
   private _speedSamples: { wall: number; pts: number }[] = [];
-  /**
-   * Wall time of the last genuine input stall (block event). Recent stalls
-   * prove the input needs burst headroom; otherwise the margin stays lean
-   * so steady-state pipeline latency (e.g. volume-command latency) stays low.
-   */
-  private _lastBlockWall = 0;
   private _blockEvents: BlockEvent[] = [];
+  private _lastBlockWall = 0;
   private _lastDecayTick = performance.now();
 
-  // --- Playout loop lifecycle ---
+  // Playout loop lifecycle.
   private _upstreamEnded = false;
   private _playoutFinished = false;
   private _destroyedByUs = false;
   private _loopStarted = false;
-  private _loopDone: Promise<void> | undefined;
-  private _wakeLoop: (() => void) | undefined;
+  private _loopDone?: Promise<void>;
+  private _wake?: () => void;
 
-  // --- Backpressure (held _write callbacks while over cap) ---
+  // Backpressure: held _write callbacks while over the cap.
   private _heldCallbacks: ((error?: Error | null) => void)[] = [];
   private _backpressureWaits = 0;
-  /**
-   * Wall-clock time of the last backpressure release. Gaps in _write()
-   * invocations that overlap a period where we held the writer measure our
-   * own throttling, not input blocking, and are ignored by observeArrival().
-   */
-  private _lastBpRelease = 0;
-
-  private _frameSendDeadlineExceededCount = 0;
+  private _slowSends = 0;
 
   private static readonly MIN_TARGET_MS = 30;
   private static readonly MAX_TARGET_MS = 15_000;
   private static readonly MIN_CAP_MS = 500;
   private static readonly MAX_CAP_MS = 30_000;
-  /**
-   * Burst headroom above the target, granted only after genuine input stalls
-   * proved it necessary (HLS segment gaps, jittery live). Otherwise the lean
-   * base margin applies so steady-state latency stays low from the start.
-   */
+  /** Burst headroom above the target, granted only after a proven stall. */
   private static readonly CAP_MARGIN_MS = 4_000;
-  /** Lean base headroom: just enough for the rate controller to work with. */
+  /** Lean base headroom: enough for the rate controller to work with. */
   private static readonly CAP_MARGIN_LOW_MS = 500;
-  /** How long a stall keeps the large headroom before it decays. */
+  /** How long a stall keeps the wide headroom before it decays. */
   private static readonly MARGIN_HOLD_MS = 10_000;
-  /** Waits longer than this while starved count as input blocking. */
-  private static readonly BLOCK_EVENT_THRESHOLD_MS = 250;
-  /** Starvation shorter than this is treated as normal jitter, not blocking. */
-  private static readonly UNDERFLOW_THRESHOLD_MS = 150;
+  /** Starvation/blocking longer than this counts as a genuine input stall. */
+  private static readonly BLOCK_MS = 250;
   private static readonly MIN_RATE = 0.85;
   /** Max rate used to drain a buffered excess back towards the target. */
   private static readonly MAX_RATE_DRAIN = 1.5;
-  /** Proportional control time constant: error / this => rate offset. */
-  private static readonly RATE_TIME_CONSTANT_MS = 1_000;
-  /** Trailing window over which input speed is estimated. Kept short so a
-   * startup burst stops dominating the estimate quickly once the input
-   * settles (burst samples age out within one window). */
+  /** Proportional control time constant: buffer error / this => rate offset. */
+  private static readonly RATE_TC_MS = 1_000;
+  /** Trailing window for input-speed estimation (bursts age out fast). */
   private static readonly SPEED_WINDOW_MS = 750;
-  /** Minimum wall span needed for a usable speed estimate. */
   private static readonly SPEED_MIN_SPAN_MS = 200;
-  /**
-   * Arrivals are trusted for speedup only below this inter-arrival gap.
-   * Throttled input runs at release pace (bursts + long stalls), so its
-   * average can masquerade as realtime while its gaps give it away.
-   */
-  private static readonly DRAIN_MAX_GAP_MS = 300;
   /** Arrivals older than this are stale; speed is unknown during gaps. */
   private static readonly SPEED_FRESH_MS = 500;
-  /** Above this input speed the input is faster than realtime (VOD-like). */
-  private static readonly SPEED_FAST = 1.3;
-  /** Below this input speed the input is slower than realtime. */
   private static readonly SPEED_SLOW = 0.8;
+  private static readonly SPEED_FAST = 1.3;
+  /** Trailing window for the inter-arrival gap check. */
+  private static readonly GAP_WINDOW_MS = 250;
+  /**
+   * Arrivals are trusted for speedup only below this gap: throttled input
+   * runs at release pace (bursts + holds), so its average can read realtime
+   * while its gaps give it away.
+   */
+  private static readonly DRAIN_MAX_GAP_MS = 150;
   private static readonly DECAY_INTERVAL_MS = 5_000;
   private static readonly BLOCK_WINDOW_MS = 60_000;
+  /**
+   * A/V sync correction time constant: offset / this => rate skew. Small
+   * enough that a pace mismatch (e.g. the buffer controller draining at
+   * 1.5x against a 1x master) settles within a small standing offset
+   * (TC x pace error), large enough that pts quantization (one frametime
+   * per send) only wobbles the sleep by a few ms.
+   */
+  private static readonly SYNC_TC_MS = 150;
+  /** A/V sync rate skew bound (fraction of realtime) in either direction. */
+  private static readonly MAX_SYNC_SKEW = 0.5;
 
-  constructor(type: string, noSleep = false) {
-    // Small object count: this stream's media-time-aware queue (plus
-    // backpressure) is the single governor of buffering. A deep Writable
-    // buffer would park seconds of media invisibly inside the stream and
-    // inflate pipeline latency (e.g. volume-command latency on VOD).
+  constructor(type: string, noSleep = false, isLive = false) {
+    // Shallow stream buffer on purpose: the media-time queue below (plus
+    // backpressure) is the single governor of buffering and latency.
     super({ objectMode: true, highWaterMark: 16 });
-    this._loggerSend = new Log(`stream:${type}:send`);
-    this._loggerSync = new Log(`stream:${type}:sync`);
-    this._loggerSleep = new Log(`stream:${type}:sleep`);
-    this._loggerBuffer = new Log(`stream:${type}:buffer`);
+    const lg = (ch: string) => new Log(`stream:${type}:${ch}`);
+    this._lgSend = lg("send");
+    this._lgSync = lg("sync");
+    this._lgSleep = lg("sleep");
+    this._lgBuffer = lg("buffer");
     this._noSleep = noSleep;
+    this._isLive = isLive;
     this._targetDelayMs = BaseMediaStream.MIN_TARGET_MS;
   }
+
+  // --- public API ---
 
   get sync(): boolean {
     return this._sync;
   }
   set sync(val: boolean) {
     this._sync = val;
-    if (val) this._loggerSync.debug("Sync enabled");
-    else this._loggerSync.debug("Sync disabled");
+    this._lgSync.debug(`Sync ${val ? "enabled" : "disabled"}`);
   }
   get syncStream() {
     return this._syncStream;
@@ -190,7 +166,12 @@ export class BaseMediaStream extends Writable {
   }
   set noSleep(val: boolean) {
     this._noSleep = val;
-    if (!val) this.resetTimingCompensation();
+    // Disengage the clock so pacing re-anchors cleanly when it resumes.
+    if (!val) this.resetClock();
+  }
+  /** Whether the input is declared live (adaptive jitter-buffer pacing). */
+  get isLive(): boolean {
+    return this._isLive;
   }
   get pts(): number | undefined {
     return this._pts;
@@ -199,14 +180,13 @@ export class BaseMediaStream extends Writable {
     return this._syncTolerance;
   }
   set syncTolerance(n: number) {
-    if (n < 0) return;
-    this._syncTolerance = n;
+    if (n >= 0) this._syncTolerance = n;
   }
   /** Current adaptive jitter buffer target, in milliseconds. */
   get targetDelay(): number {
     return this._targetDelayMs;
   }
-  /** Current smoothed output speed factor. */
+  /** Current smoothed output speed factor (excludes the sync skew). */
   get outputRate(): number {
     return this._outputRate;
   }
@@ -229,95 +209,53 @@ export class BaseMediaStream extends Writable {
     throw new Error("Not implemented");
   }
 
-  private get ptsDelta() {
-    if (this.pts !== undefined && this.syncStream?.pts !== undefined)
-      return this.pts - this.syncStream.pts;
-    return undefined;
-  }
+  // --- buffering & backpressure ---
 
-  /** Whether the master clock is still producing output to sync against. */
-  private get syncMasterActive() {
-    const master = this._syncStream;
-    return (
-      master !== undefined && !master._destroyedByUs && !master._playoutFinished
-    );
-  }
-
-  private resetTimingCompensation() {
-    this._nextPlayoutTime = undefined;
-    this._outputRate = 1;
-  }
-
-  private get capMarginMs(): number {
-    // Large headroom only shortly after a proven stall (bursty/idle input
-    // needs room to absorb bursts and ride out gaps). Otherwise stay lean:
-    // steady-state pipeline latency (and e.g. volume-command latency) is set
-    // by how much media we allow to stand, so a fast input is throttled
-    // close to the target from the very start.
-    if (
+  private get bufferCapMs(): number {
+    // Wide headroom only for a while after a proven stall (absorb bursts,
+    // ride out gaps); stay lean otherwise so steady-state latency is low
+    // from the very start.
+    const recentStall =
       this._lastBlockWall !== 0 &&
-      performance.now() - this._lastBlockWall <
-        BaseMediaStream.MARGIN_HOLD_MS
-    ) {
-      return BaseMediaStream.CAP_MARGIN_MS;
-    }
-    return BaseMediaStream.CAP_MARGIN_LOW_MS;
-  }
-
-  private get bufferCapMs() {
+      performance.now() - this._lastBlockWall < BaseMediaStream.MARGIN_HOLD_MS;
+    const margin = recentStall
+      ? BaseMediaStream.CAP_MARGIN_MS
+      : BaseMediaStream.CAP_MARGIN_LOW_MS;
     return Math.min(
       BaseMediaStream.MAX_CAP_MS,
-      Math.max(BaseMediaStream.MIN_CAP_MS, this._targetDelayMs + this.capMarginMs),
+      Math.max(BaseMediaStream.MIN_CAP_MS, this._targetDelayMs + margin),
     );
   }
 
-  private wakePlayoutLoop() {
-    this._wakeLoop?.();
-    this._wakeLoop = undefined;
+  private releaseBackpressure() {
+    // Release one writer per frame sent (not a batch at a low watermark):
+    // the upstream then advances exactly at output pace instead of flooding
+    // in bursts, which would sawtooth both the buffer and the arrivals.
+    if (this._heldCallbacks.length === 0) return;
+    if (this._bufferedMs > this.bufferCapMs) return;
+    this._heldCallbacks.shift()?.(null);
   }
 
-  private waitForWakeOrTimeout(ms: number): Promise<void> {
-    return new Promise<void>((resolve) => {
-      let settled = false;
-      const mine = () => {
-        if (settled) return;
-        settled = true;
-        resolve();
-      };
-      this._wakeLoop = mine;
-      void setTimeout(ms).then(() => {
-        // Only clear/expire our own waiter; a newer waiter may exist if
-        // wake and timeout raced.
-        if (this._wakeLoop === mine && !settled) {
-          settled = true;
-          this._wakeLoop = undefined;
-          resolve();
-        }
-      });
-    });
-  }
+  // --- input observation ---
 
   private observeArrival(now: number, pts: number) {
-    const lastWall = this._lastArrivalWall;
-    const lastPts = this._lastArrivalPts;
+    if (!this._isLive) return;
+    const prevWall = this._lastArrivalWall;
+    const prevPts = this._lastArrivalPts;
     this._lastArrivalWall = now;
     this._lastArrivalPts = pts;
-    if (lastWall === undefined || lastPts === undefined) return;
+    if (prevWall === undefined || prevPts === undefined) return;
     if (!Number.isFinite(pts)) return;
-    // A _write() gap that overlaps a period where we held the writer back
-    // ourselves (backpressure) measures our own throttling, not the input.
-    // Only gaps observed while the writer ran freely say anything about
-    // input pacing.
-    if (this._heldCallbacks.length > 0 || lastWall < this._lastBpRelease)
-      return;
-    const mediaAdvance = pts - lastPts;
-    // A discontinuity (seek, track switch) resets the observation baseline
-    // instead of polluting it.
+    // Gaps observed while we hold the writer measure our own throttling,
+    // not the input: only free-running arrivals say anything about pacing.
+    if (this._heldCallbacks.length > 0) return;
+    const mediaAdvance = pts - prevPts;
+    // A discontinuity (seek, track switch) resets the baseline instead of
+    // polluting it.
     if (Math.abs(mediaAdvance) > 30_000) {
       this._speedSamples.length = 0;
       return;
     }
-    // Trailing window for input-speed estimation.
     this._speedSamples.push({ wall: now, pts });
     while (
       this._speedSamples.length > 1 &&
@@ -325,55 +263,41 @@ export class BaseMediaStream extends Writable {
     ) {
       this._speedSamples.shift();
     }
-    const wallGap = now - lastWall;
-    // How far the input fell behind the media timeline between these two
-    // packets. Steady/fast inputs (live, VOD) sit at ~0 or below; a bursty
-    // input (HLS segment fetch gap) shows a large positive value while the
-    // media timeline barely advanced.
-    const lag = wallGap - mediaAdvance;
-    if (lag > BaseMediaStream.BLOCK_EVENT_THRESHOLD_MS) {
-      this.recordBlockEvent(lag);
-    }
+    // How far the input fell behind the media timeline between packets.
+    // Steady inputs sit at ~0 or below; an input stall (HLS segment fetch
+    // gap) shows a large positive value while media barely advances.
+    const lag = now - prevWall - mediaAdvance;
+    if (lag > BaseMediaStream.BLOCK_MS) this.recordBlock(lag);
   }
 
-  private recordBlockEvent(waitedMs: number) {
-    if (waitedMs < BaseMediaStream.BLOCK_EVENT_THRESHOLD_MS) return;
+  private recordBlock(waitedMs: number) {
+    if (!this._isLive) return;
+    if (waitedMs < BaseMediaStream.BLOCK_MS) return;
     const now = performance.now();
     this._blockEvents.push({ at: now, waited: waitedMs });
-    // A proven stall earns burst headroom for a while (see capMarginMs).
+    // A proven stall earns burst headroom for a while (see bufferCapMs).
     this._lastBlockWall = now;
-    // Grow the target so the buffer covers the observed stall (plus margin),
-    // e.g. a full HLS segment fetch gap.
+    // Grow the target so the buffer covers the observed stall (plus margin).
     const candidate = waitedMs * 1.25 + 100;
     if (candidate > this._targetDelayMs) {
       this._targetDelayMs = Math.min(BaseMediaStream.MAX_TARGET_MS, candidate);
-      this._loggerBuffer.debug(
-        {
-          stats: {
-            waited: waitedMs,
-            target: this._targetDelayMs,
-          },
-        },
-        `Input blocked for ${waitedMs.toFixed(0)}ms. Growing jitter buffer to ${this._targetDelayMs.toFixed(0)}ms`,
+      this._lgBuffer.debug(
+        { stats: { waited: waitedMs, target: this._targetDelayMs } },
+        `Input blocked ${waitedMs.toFixed(0)}ms; target -> ${this._targetDelayMs.toFixed(0)}ms`,
       );
     }
   }
 
-  private pruneBlockEvents(now: number) {
+  /** Floor for target decay: blocking in the last minute keeps it high. */
+  private decayFloor(now: number): number {
     while (
       this._blockEvents.length > 0 &&
       now - this._blockEvents[0].at > BaseMediaStream.BLOCK_WINDOW_MS
     ) {
       this._blockEvents.shift();
     }
-  }
-
-  /** Floor for target decay: recent blocking keeps the target high. */
-  private decayFloor(now: number) {
-    this.pruneBlockEvents(now);
     let floor = BaseMediaStream.MIN_TARGET_MS;
     for (const ev of this._blockEvents) {
-      if (ev.waited < BaseMediaStream.BLOCK_EVENT_THRESHOLD_MS) continue;
       floor = Math.max(
         floor,
         Math.min(BaseMediaStream.MAX_TARGET_MS, ev.waited * 1.25 + 100),
@@ -383,6 +307,7 @@ export class BaseMediaStream extends Writable {
   }
 
   private maybeDecayTarget(now: number) {
+    if (!this._isLive) return;
     if (now - this._lastDecayTick < BaseMediaStream.DECAY_INTERVAL_MS) return;
     this._lastDecayTick = now;
     const floor = this.decayFloor(now);
@@ -391,23 +316,25 @@ export class BaseMediaStream extends Writable {
         floor,
         this._targetDelayMs - Math.max(100, this._targetDelayMs * 0.15),
       );
-      this._loggerBuffer.debug(
+      this._lgBuffer.debug(
         { stats: { target: this._targetDelayMs, floor } },
-        `Input stable. Decaying jitter buffer to ${this._targetDelayMs.toFixed(0)}ms`,
+        `Input stable; target -> ${this._targetDelayMs.toFixed(0)}ms`,
       );
     }
   }
 
+  // --- rate controller ---
+
   /**
-   * Estimated input speed (media ms per wall-clock ms) over the trailing
-   * window, or undefined when unknown: too few samples, or no fresh
-   * arrivals (input idle, e.g. an HLS segment gap).
+   * Estimated input speed (media ms per wall ms) over the trailing window,
+   * or undefined when unknown: too few samples, or no fresh arrivals
+   * (input idle, e.g. an HLS segment gap).
    */
   private get inputSpeed(): number | undefined {
-    const samples = this._speedSamples;
-    if (samples.length < 2) return undefined;
-    const first = samples[0];
-    const last = samples[samples.length - 1];
+    const s = this._speedSamples;
+    if (s.length < 2) return undefined;
+    const first = s[0];
+    const last = s[s.length - 1];
     const wallSpan = last.wall - first.wall;
     if (wallSpan < BaseMediaStream.SPEED_MIN_SPAN_MS) return undefined;
     if (performance.now() - last.wall > BaseMediaStream.SPEED_FRESH_MS)
@@ -418,102 +345,132 @@ export class BaseMediaStream extends Writable {
   }
 
   /**
-   * Largest inter-arrival wall gap in the trailing window, or undefined when
-   * too sparse to say. Bursty or throttled input shows large gaps even when
-   * its average speed reads realtime.
+   * Largest inter-arrival wall gap in the trailing gap window, or undefined
+   * when too sparse to say. The window is deliberately short: a single
+   * hold/release stall must stop vetoing speedup shortly after the writer
+   * runs freely again, or hovering near the cap would lock the gate shut
+   * (and the buffer high) permanently.
    */
   private get maxArrivalGap(): number | undefined {
-    const samples = this._speedSamples;
-    if (samples.length < 2) return undefined;
+    const s = this._speedSamples;
+    const cutoff = performance.now() - BaseMediaStream.GAP_WINDOW_MS;
     let max = 0;
-    for (let i = 1; i < samples.length; i++) {
-      max = Math.max(max, samples[i].wall - samples[i - 1].wall);
+    let count = 0;
+    let prev = -1;
+    for (let i = 0; i < s.length; i++) {
+      if (s[i].wall < cutoff) continue;
+      if (prev >= 0) max = Math.max(max, s[i].wall - s[prev].wall);
+      prev = i;
+      count++;
     }
-    return max;
+    return count >= 2 ? max : undefined;
   }
 
-  /** Proportional controller: steer the buffer level towards the target. */
+  /**
+   * Proportional controller: steer the buffer level towards the target.
+   *
+   * Drain a buffered excess faster than realtime only when fresh arrivals
+   * show a smooth ~realtime input (e.g. a live source after a startup
+   * burst). Everything else (bursty/throttled arrivals, idle gaps, slower
+   * input) paces at realtime; backpressure / the buffered media absorbs the
+   * difference. Judging by buffer level alone would strand a transient
+   * burst's latency in the buffer forever. (Sustained faster-than-realtime
+   * input is out of scope: `isLive: false` (the default) pins this whole
+   * controller at 1x.)
+   */
   private updateOutputRate() {
-    const excess = this._bufferedMs - this._targetDelayMs;
+    if (!this._isLive) {
+      this._outputRate = 1;
+      return;
+    }
     const speed = this.inputSpeed;
-    // Drain a buffered excess faster than realtime only when fresh arrivals
-    // show a smooth ~realtime input (e.g. a live source after an initial
-    // burst). A sustained faster-than-realtime input (VOD), a slower input,
-    // idle gaps, or bursty/throttled arrivals (large inter-arrival gaps give
-    // those away even when their average reads realtime) pace at realtime
-    // instead; backpressure / the buffered media absorbs the difference.
-    // Judging by buffer level alone would strand a transient burst's latency
-    // in the buffer forever, mistaking a live stream for VOD.
     const gap = this.maxArrivalGap;
-    const realtimeInput =
+    const smoothRealtime =
       speed !== undefined &&
       speed >= BaseMediaStream.SPEED_SLOW &&
       speed <= BaseMediaStream.SPEED_FAST &&
       (gap === undefined || gap < BaseMediaStream.DRAIN_MAX_GAP_MS);
-    const maxRate = realtimeInput ? BaseMediaStream.MAX_RATE_DRAIN : 1;
-    let desired = 1 + excess / BaseMediaStream.RATE_TIME_CONSTANT_MS;
-    desired = Math.min(maxRate, Math.max(BaseMediaStream.MIN_RATE, desired));
+    const maxRate = smoothRealtime ? BaseMediaStream.MAX_RATE_DRAIN : 1;
+    const desired =
+      1 + (this._bufferedMs - this._targetDelayMs) / BaseMediaStream.RATE_TC_MS;
     // Smooth to avoid oscillation; the buffer integrates the rate anyway.
-    this._outputRate += (desired - this._outputRate) * 0.15;
+    const clamped = Math.min(
+      maxRate,
+      Math.max(BaseMediaStream.MIN_RATE, desired),
+    );
+    this._outputRate += (clamped - this._outputRate) * 0.15;
+  }
+
+  // --- A/V sync ---
+
+  /** Whether an enabled master clock is still producing output. */
+  private get syncMasterActive(): boolean {
+    const master = this._syncStream;
+    return (
+      this._sync &&
+      master !== undefined &&
+      !master._destroyedByUs &&
+      !master._playoutFinished
+    );
+  }
+
+  private get ptsDelta(): number | undefined {
+    const master = this._syncStream;
+    if (this._pts === undefined || master?.pts === undefined) return undefined;
+    return this._pts - master.pts;
   }
 
   /**
-   * Clock correction (ms) to stay in sync with the master stream.
-   * Positive => this stream is ahead and its clock must be retarded.
-   * Negative infinity => this stream is behind and must skip sleeping.
+   * Gradual A/V sync: a *rate* multiplier applied on top of the buffer
+   * controller, never a clock jump. Outside the tolerance band the playout
+   * runs proportionally slower (ahead of the master) or faster (behind),
+   * bounded to MAX_SYNC_SKEW, so the media-time offset decays smoothly
+   * (time constant SYNC_TC_MS) instead of being corrected in frametime-
+   * sized sleeps or by dropping the whole accumulated debt at once.
    */
-  private syncCorrection(): number | undefined {
-    if (!this._sync || !this.syncMasterActive) return undefined;
-    const delta = this.ptsDelta;
-    if (delta === undefined) return undefined;
-    if (delta > this._syncTolerance) {
-      // Ahead of master: trim a fraction of the lead per frame so the
-      // slave eases back into the tolerance band without oscillation.
-      // (Correcting the full lead every frame would over-brake and swing
-      // the slave behind instead.)
-      return Math.min(delta * 0.5, 250);
-    }
-    if (delta < -this._syncTolerance) {
-      // Behind master: don't sleep, drop accumulated debt.
-      this._loggerSync.debug(
-        {
-          stats: {
-            pts: this.pts,
-            pts_other: this.syncStream?.pts,
-          },
-        },
-        "Stream is behind. Not sleeping for this frame",
+  private syncSkew(): number {
+    const delta = this.syncMasterActive ? this.ptsDelta : undefined;
+    const correcting =
+      delta !== undefined && Math.abs(delta) > this._syncTolerance;
+    if (correcting !== this._syncEngaged) {
+      this._syncEngaged = correcting;
+      this._lgSync.debug(
+        { stats: { pts: this._pts, pts_other: this._syncStream?.pts } },
+        correcting ? "Sync correction engaged" : "Sync correction released",
       );
-      this.resetTimingCompensation();
-      return Number.NEGATIVE_INFINITY;
     }
-    return 0;
+    if (!correcting || delta === undefined) return 1;
+    const skew = Math.min(
+      (Math.abs(delta) - this._syncTolerance) / BaseMediaStream.SYNC_TC_MS,
+      BaseMediaStream.MAX_SYNC_SKEW,
+    );
+    return delta > 0 ? 1 - skew : 1 + skew;
   }
 
-  private async waitForData(): Promise<boolean> {
-    // Returns true when there is data to play, false when the loop should
-    // terminate (upstream ended and drained, or destroyed).
-    while (
-      this._queue.size === 0 &&
-      !this._upstreamEnded &&
-      !this._destroyedByUs
-    ) {
-      await new Promise<void>((resolve) => {
-        this._wakeLoop = resolve;
-      });
-      this._wakeLoop = undefined;
-    }
-    return this._queue.size > 0;
+  private resetClock() {
+    this._nextPlayoutTime = undefined;
+    this._outputRate = 1;
   }
 
-  private releaseBackpressure() {
-    if (this._heldCallbacks.length === 0) return;
-    // Hysteresis: only release once drained comfortably below the cap.
-    if (this._bufferedMs > this.bufferCapMs * 0.7) return;
-    const cbs = this._heldCallbacks;
-    this._heldCallbacks = [];
-    this._lastBpRelease = performance.now();
-    for (const cb of cbs) cb(null);
+  // --- playout loop ---
+
+  /** Resolve on wakeup, or after `timeoutMs` when given. */
+  private wait(timeoutMs?: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+      let settled = false;
+      const resume = () => {
+        if (settled) return;
+        settled = true;
+        if (this._wake === resume) this._wake = undefined;
+        resolve();
+      };
+      this._wake = resume;
+      if (timeoutMs !== undefined) void setTimeout(timeoutMs).then(resume);
+    });
+  }
+
+  private wakeup() {
+    this._wake?.();
   }
 
   private startPlayoutLoop() {
@@ -522,43 +479,42 @@ export class BaseMediaStream extends Writable {
     this._loopDone = this.playoutLoop().catch(() => {});
   }
 
+  private async sendAndReport(frame: QueuedFrame) {
+    const sendStart = performance.now();
+    await this._sendFrame(frame.data, frame.frametime);
+    this.reportSend(frame, performance.now() - sendStart);
+  }
+
   private async playoutLoop(): Promise<void> {
     try {
       // Initial buffering: don't start the clock until roughly one target
       // worth of media is available (bounded wait so sparse live inputs
       // still start promptly).
-      if (
+      const deadline = performance.now() + 250;
+      while (
         !this._noSleep &&
         !this._destroyedByUs &&
         !this._upstreamEnded &&
-        this._bufferedMs < this._targetDelayMs
+        this._bufferedMs < this._targetDelayMs &&
+        performance.now() < deadline
       ) {
-        const deadline = performance.now() + 250;
-        while (
-          !this._destroyedByUs &&
-          !this._upstreamEnded &&
-          this._bufferedMs < this._targetDelayMs &&
-          performance.now() < deadline
-        ) {
-          await this.waitForWakeOrTimeout(50);
-        }
+        await this.wait(50);
       }
 
       while (!this._destroyedByUs) {
         if (this._queue.size === 0) {
           if (this._upstreamEnded) break;
           const starvedAt = performance.now();
-          const ok = await this.waitForData();
-          if (!ok || this._destroyedByUs) break;
-          if (this._upstreamEnded && this._queue.size === 0) break;
-          const waited = performance.now() - starvedAt;
-          if (
-            this._queue.size > 0 &&
-            waited > BaseMediaStream.UNDERFLOW_THRESHOLD_MS
+          while (
+            this._queue.size === 0 &&
+            !this._upstreamEnded &&
+            !this._destroyedByUs
           ) {
-            // Playout starved: the buffer was too small for this input.
-            this.recordBlockEvent(waited);
+            await this.wait();
           }
+          if (this._destroyedByUs || this._queue.size === 0) break;
+          const waited = performance.now() - starvedAt;
+          if (waited > BaseMediaStream.BLOCK_MS) this.recordBlock(waited);
           // Resume immediately (no re-buffering stall); the grown target
           // slows the clock down via the rate controller to rebuild.
           this._nextPlayoutTime ??= performance.now();
@@ -572,27 +528,24 @@ export class BaseMediaStream extends Writable {
         const now = performance.now();
         this._nextPlayoutTime ??= now;
 
-        if (!this._noSleep) {
+        if (this._noSleep) {
+          await this.sendAndReport(frame);
+          // Keep the clock disengaged while pacing is bypassed so it
+          // re-anchors cleanly when pacing resumes.
+          this._nextPlayoutTime = undefined;
+        } else {
           this.updateOutputRate();
           this.maybeDecayTarget(now);
+          const rate = Math.min(
+            BaseMediaStream.MAX_RATE_DRAIN,
+            this._outputRate * this.syncSkew(),
+          );
 
-          const correction = this.syncCorrection();
-          if (correction === Number.NEGATIVE_INFINITY) {
-            // Behind master: send immediately, clock re-anchored above.
-            this._nextPlayoutTime = now;
-          } else if (correction !== undefined && correction > 0) {
-            // Ahead of master: retard the clock itself. Delaying just this
-            // frame would not stick: the anchor advances nominally every
-            // frame and would march straight past the delay, leaving the
-            // slave permanently fast.
-            this._nextPlayoutTime = (this._nextPlayoutTime ?? now) + correction;
-          }
-
-          let due = (this._nextPlayoutTime ?? now) - now;
+          let due = this._nextPlayoutTime - now;
           if (due < -500) {
             // Hopelessly late (event loop stall, slow send): drop debt
             // instead of bursting to catch up.
-            this._loggerSleep.debug(
+            this._lgSleep.debug(
               { stats: { lateBy: -due } },
               "Playout is late. Re-anchoring clock",
             );
@@ -600,35 +553,23 @@ export class BaseMediaStream extends Writable {
             due = 0;
           }
           if (due > 0) {
-            this._loggerSleep.debug(
+            this._lgSleep.debug(
               {
                 stats: {
                   pts: frame.pts,
-                  rate: this._outputRate,
+                  rate,
                   buffered: this._bufferedMs,
                   target: this._targetDelayMs,
                 },
               },
-              `Sleeping for ${due.toFixed(2)}ms at ${this._outputRate.toFixed(3)}x`,
+              `Sleeping for ${due.toFixed(2)}ms at ${rate.toFixed(3)}x`,
             );
             await setTimeout(due);
             if (this._destroyedByUs) return;
           }
 
-          const sendStart = performance.now();
-          await this._sendFrame(frame.data, frame.frametime);
-          const sendTime = performance.now() - sendStart;
-          this.reportSend(frame, sendTime);
-
-          this._nextPlayoutTime += frame.frametime / this._outputRate;
-        } else {
-          const sendStart = performance.now();
-          await this._sendFrame(frame.data, frame.frametime);
-          const sendTime = performance.now() - sendStart;
-          this.reportSend(frame, sendTime);
-          // Keep the clock disengaged while pacing is bypassed so it
-          // re-anchors cleanly when pacing resumes.
-          this._nextPlayoutTime = undefined;
+          await this.sendAndReport(frame);
+          this._nextPlayoutTime += frame.frametime / rate;
         }
 
         this._pts = frame.pts;
@@ -636,18 +577,17 @@ export class BaseMediaStream extends Writable {
       }
     } finally {
       this._playoutFinished = true;
-      this.wakePlayoutLoop();
+      this.wakeup();
       // Unblock any writers stuck in backpressure so _final can complete.
-      const cbs = this._heldCallbacks;
+      const held = this._heldCallbacks;
       this._heldCallbacks = [];
-      if (cbs.length > 0) this._lastBpRelease = performance.now();
-      for (const cb of cbs) cb(null);
+      for (const cb of held) cb(null);
     }
   }
 
   private reportSend(frame: QueuedFrame, sendTime: number) {
     const ratio = frame.frametime > 0 ? sendTime / frame.frametime : 0;
-    this._loggerSend.debug(
+    this._lgSend.debug(
       {
         stats: {
           pts: frame.pts,
@@ -658,21 +598,23 @@ export class BaseMediaStream extends Writable {
       },
       `Frame sent in ${sendTime.toFixed(2)}ms (${(ratio * 100).toFixed(2)}% frametime)`,
     );
-    if (ratio > 1) {
-      this._frameSendDeadlineExceededCount++;
-      if (this._frameSendDeadlineExceededCount > 10)
-        this._loggerSend.warn(
-          {
-            frame_size: frame.data.length,
-            duration: sendTime,
-            frametime: frame.frametime,
-          },
-          `Frame takes too long to send (${(ratio * 100).toFixed(2)}% frametime)`,
-        );
-    } else {
-      this._frameSendDeadlineExceededCount = 0;
+    if (ratio <= 1) {
+      this._slowSends = 0;
+      return;
+    }
+    if (++this._slowSends > 10) {
+      this._lgSend.warn(
+        {
+          frame_size: frame.data.length,
+          duration: sendTime,
+          frametime: frame.frametime,
+        },
+        `Frame takes too long to send (${(ratio * 100).toFixed(2)}% frametime)`,
+      );
     }
   }
+
+  // --- stream implementation ---
 
   async _write(
     frame: Packet,
@@ -680,7 +622,6 @@ export class BaseMediaStream extends Writable {
     callback: (error?: Error | null) => void,
   ) {
     const arrival = performance.now();
-
     const { data, pts, duration, timeBase } = frame;
     if (!data) {
       frame.free();
@@ -701,7 +642,6 @@ export class BaseMediaStream extends Writable {
     }
 
     this.observeArrival(arrival, ptsMs);
-
     if (this._destroyedByUs) {
       frame.free();
       callback();
@@ -717,11 +657,11 @@ export class BaseMediaStream extends Writable {
     frame.free();
 
     this.startPlayoutLoop();
-    this.wakePlayoutLoop();
+    this.wakeup();
 
-    // Backpressure: hold the writer once buffered media exceeds the cap.
-    // This throttles faster-than-realtime inputs (VOD) down to ~1x and
-    // absorbs bursty (HLS) input without unbounded growth.
+    // Hold the writer once buffered media exceeds the cap: throttles
+    // ahead-of-realtime input down to ~1x and absorbs bursty (HLS) input
+    // without unbounded growth.
     if (this._bufferedMs > this.bufferCapMs) {
       this._backpressureWaits++;
       this._heldCallbacks.push(callback);
@@ -733,7 +673,7 @@ export class BaseMediaStream extends Writable {
   _final(callback: (error?: Error | null) => void): void {
     this._upstreamEnded = true;
     this.startPlayoutLoop();
-    this.wakePlayoutLoop();
+    this.wakeup();
     void (async () => {
       try {
         await this._loopDone;
@@ -750,12 +690,12 @@ export class BaseMediaStream extends Writable {
   ): void {
     this._destroyedByUs = true;
     this._upstreamEnded = true;
-    this.wakePlayoutLoop();
+    this.wakeup();
     this._queue.clear();
     this._bufferedMs = 0;
-    const cbs = this._heldCallbacks;
+    const held = this._heldCallbacks;
     this._heldCallbacks = [];
-    for (const cb of cbs) cb(null);
+    for (const cb of held) cb(null);
     super._destroy(error, callback);
     this.syncStream = undefined;
   }

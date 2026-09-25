@@ -3,8 +3,8 @@ import { BaseMediaStream } from "./BaseMediaStream.js";
 
 export class VideoStream extends BaseMediaStream {
   private _conn: WebRtcConnWrapper;
-  constructor(conn: WebRtcConnWrapper, noSleep = false) {
-    super("video", noSleep);
+  constructor(conn: WebRtcConnWrapper, noSleep = false, isLive = false) {
+    super("video", noSleep, isLive);
     this._conn = conn;
   }
 
