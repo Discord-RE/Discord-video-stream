@@ -458,9 +458,9 @@ export class BaseMediaStream extends Writable {
   }
 
   /**
-   * Extra delay (ms) to stay in sync with the master stream.
-   * Positive => this stream is ahead and must wait.
-   * Negative => this stream is behind and must skip sleeping.
+   * Clock correction (ms) to stay in sync with the master stream.
+   * Positive => this stream is ahead and its clock must be retarded.
+   * Negative infinity => this stream is behind and must skip sleeping.
    */
   private syncCorrection(): number | undefined {
     if (!this._sync || !this.syncMasterActive) return undefined;
@@ -576,14 +576,19 @@ export class BaseMediaStream extends Writable {
           this.updateOutputRate();
           this.maybeDecayTarget(now);
 
-          let correction = this.syncCorrection();
+          const correction = this.syncCorrection();
           if (correction === Number.NEGATIVE_INFINITY) {
             // Behind master: send immediately, clock re-anchored above.
-            correction = undefined;
             this._nextPlayoutTime = now;
+          } else if (correction !== undefined && correction > 0) {
+            // Ahead of master: retard the clock itself. Delaying just this
+            // frame would not stick: the anchor advances nominally every
+            // frame and would march straight past the delay, leaving the
+            // slave permanently fast.
+            this._nextPlayoutTime = (this._nextPlayoutTime ?? now) + correction;
           }
 
-          let due = this._nextPlayoutTime - now + (correction ?? 0);
+          let due = (this._nextPlayoutTime ?? now) - now;
           if (due < -500) {
             // Hopelessly late (event loop stall, slow send): drop debt
             // instead of bursting to catch up.
@@ -592,7 +597,7 @@ export class BaseMediaStream extends Writable {
               "Playout is late. Re-anchoring clock",
             );
             this._nextPlayoutTime = now;
-            due = correction !== undefined && correction > 0 ? correction : 0;
+            due = 0;
           }
           if (due > 0) {
             this._loggerSleep.debug(
