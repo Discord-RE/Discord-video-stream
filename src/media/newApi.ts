@@ -255,42 +255,12 @@ function computeScaledDims(
 async function readProbeBuffer(stream: Readable): Promise<Buffer | null> {
   const chunks: Buffer[] = [];
   let size = 0;
-  while (size < 2 ** 20) {
-    const chunk: Buffer | null = await new Promise((resolve) => {
-      if (stream.readableEnded || stream.destroyed) {
-        resolve(null);
-        return;
-      }
-      const buffered: Buffer | null = stream.read();
-      if (buffered) {
-        resolve(buffered);
-        return;
-      }
-      const cleanup = () => {
-        stream.off("readable", onReadable);
-        stream.off("end", onEnd);
-        stream.off("error", onError);
-      };
-      const onReadable = () => {
-        cleanup();
-        resolve(stream.read());
-      };
-      const onEnd = () => {
-        cleanup();
-        resolve(null);
-      };
-      const onError = () => {
-        cleanup();
-        resolve(null);
-      };
-      stream.once("readable", onReadable);
-      stream.once("end", onEnd);
-      stream.once("error", onError);
-    });
-    if (!chunk) break;
+  // destroyOnReturn: false, so the stream survives when the probe succeeds
+  // early and the remaining data is still needed
+  for await (const chunk of stream.iterator({ destroyOnReturn: false })) {
     chunks.push(chunk);
     size += chunk.length;
-    if (InputFormat.probe(Buffer.concat(chunks))) break;
+    if (size >= 2 ** 20 || InputFormat.probe(Buffer.concat(chunks))) break;
   }
   return chunks.length ? Buffer.concat(chunks) : null;
 }
