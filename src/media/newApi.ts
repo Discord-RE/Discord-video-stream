@@ -608,12 +608,14 @@ export async function prepareStream(
     }
 
     // HW decode + HW scale when the encoder's context can decode the input
-    // and the encoder has a hardware scaler, else decode and scale on the CPU
+    // and the encoder has a hardware scaler, else decode and scale on the CPU.
+    // The check must be an actual hardware test: getDecoderCodec only reports
+    // the registered hw configs, which say nothing about driver support.
     const hwChain =
       hw !== null &&
       hw.scaleFilter !== undefined &&
       encodeHardware !== null &&
-      encodeHardware.getDecoderCodec(vStream.codecpar.codecId) !== null
+      encodeHardware.testDecoder(vStream.codecpar.codecId)
         ? { hardware: encodeHardware, scaleFilter: hw.scaleFilter }
         : null;
 
