@@ -30,6 +30,7 @@ import {
   HardwareContext,
   InputFormat,
   pipeline,
+  Rational,
   type Packet,
 } from "node-av";
 import pDebounce from "p-debounce";
@@ -651,18 +652,27 @@ export async function prepareStream(
     }
     videoDecoder = await Decoder.create(vStream, decoderOptions);
 
-    const inFps =
-      vInfo.framerate_den > 0 ? vInfo.framerate_num / vInfo.framerate_den : 0;
+    // pass the target framerate explicitly: the framerate the encoder derives
+    // itself (from the filter/decoder stream) may be wrong or missing, which
+    // breaks the encoder's average bitrate calculations
+    const targetFramerate = frameRate
+      ? new Rational(frameRate, 1)
+      : sourceFramerate;
+    const targetFps =
+      targetFramerate.den > 0 ? targetFramerate.num / targetFramerate.den : 0;
     const encoderOptions: EncoderOptions = {
       filter: videoFilter,
       decoder: videoDecoder,
       autoFormat: true,
       context: {
+        ...(targetFramerate.num > 0 && targetFramerate.den > 0
+          ? { framerate: targetFramerate }
+          : {}),
         bitRate: `${bitrateVideo}k`,
         rcMaxRate: `${bitrateVideoMax}k`,
         rcBufferSize: `${Math.round(bitrateVideo / 2)}k`,
         // keyframes every ~1s, like ffmpeg's `-force_key_frames expr:gte(t,n_forced*1)`
-        gopSize: Math.max(1, Math.round(frameRate ?? (inFps > 0 ? inFps : 30))),
+        gopSize: Math.max(1, Math.round(targetFps > 0 ? targetFps : 30)),
         // B-frames are not supported by Discord's packetizer
         maxBFrames: 0,
       },
