@@ -633,7 +633,9 @@ export async function prepareStream(
             "format=yuv420p",
             ...(encoderSettings.outFilters ?? []),
           ].join(","),
-      { hardware: hwChain?.hardware ?? null, signal: cancelSignal },
+      // the encode context always goes to the filterchain: the upload filters
+      // (hwupload) need it for their hardware frames context
+      { hardware: encodeHardware, signal: cancelSignal },
     );
 
     const decoderOptions: DecoderOptions = {
