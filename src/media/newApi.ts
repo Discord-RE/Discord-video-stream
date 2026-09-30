@@ -3,7 +3,6 @@ import Log from "debug-level";
 import {
   AV_CHANNEL_ORDER_NATIVE,
   AV_CODEC_FLAG_LOW_DELAY,
-  AV_HWDEVICE_TYPE_VAAPI,
   AV_LOG_DEBUG,
   AV_LOG_ERROR,
   AV_LOG_FATAL,
@@ -40,7 +39,7 @@ import type { SupportedVideoCodec } from "../utils.js";
 import { isFiniteNonZero } from "../utils.js";
 import { AudioStream } from "./AudioStream.js";
 import type { EncoderSettingsGetter } from "./encoders/index.js";
-import { Encoders } from "./encoders/index.js";
+import { Encoders, hardwareTypeForEncoder } from "./encoders/index.js";
 import { AVCodecID } from "./LibavCodecId.js";
 import { createDecoder } from "./LibavDecoder.js";
 import {
@@ -609,17 +608,18 @@ export async function prepareStream(
       throw new Error(`Encoder settings not specified for ${videoCodec}`);
     }
 
-    let encodeHardware: HardwareContext | null = null;
-    const vaapiDevice = encoderSettings.globalOptions?.vaapi_device;
-    if (vaapiDevice) {
-      encodeHardware = HardwareContext.create(
-        AV_HWDEVICE_TYPE_VAAPI,
-        vaapiDevice,
+    // Deduce the hardware context from the encoder name (e.g. "h264_vaapi" ->
+    // VAAPI), so any hardware encoder works without per-encoder special cases
+    const hwType = hardwareTypeForEncoder(encoderSettings.name);
+    const encodeHardware =
+      hwType === null
+        ? null
+        : HardwareContext.create(hwType, encoderSettings.device);
+    if (hwType !== null && !encodeHardware) {
+      closePipeline();
+      throw new Error(
+        `Failed to create hardware device context for ${encoderSettings.name}`,
       );
-      if (!encodeHardware) {
-        closePipeline();
-        throw new Error("Failed to create VAAPI hardware device context");
-      }
     }
 
     videoFilter = FilterAPI.create(
