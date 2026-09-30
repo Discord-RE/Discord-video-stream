@@ -7,7 +7,7 @@ import {
   avGetCodecName,
   BitStreamFilterAPI,
   Demuxer,
-  type IRational,
+  Rational,
   type Stream,
 } from "node-av";
 import pDebounce from "p-debounce";
@@ -48,7 +48,7 @@ const allowedAudioCodec = new Set([AVCodecID.AV_CODEC_ID_OPUS]);
  * Frame rate of the stream. `codecpar.frameRate` is often missing (0/0), so
  * it falls back to the stream's average and real base frame rates.
  */
-export function streamFrameRate(stream: Stream): IRational {
+export function streamFrameRate(stream: Stream): Rational {
   const codecpar = stream.codecpar.frameRate;
   if (codecpar.num > 0 && codecpar.den > 0) return codecpar;
   if (stream.avgFrameRate.num > 0 && stream.avgFrameRate.den > 0) {
