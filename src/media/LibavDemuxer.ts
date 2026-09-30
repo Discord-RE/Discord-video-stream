@@ -2,12 +2,13 @@ import { randomUUID } from "node:crypto";
 import type { Readable } from "node:stream";
 import { PassThrough } from "node:stream";
 import { Log } from "debug-level";
-import type { CodecParameters, Packet } from "node-av";
 import {
   avGetCodecName,
   BitStreamFilterAPI,
   Demuxer,
-  Rational,
+  type CodecParameters,
+  type Packet,
+  type Rational,
   type Stream,
 } from "node-av";
 import pDebounce from "p-debounce";
@@ -57,7 +58,8 @@ export function streamFrameRate(stream: Stream): Rational {
   return stream.rFrameRate;
 }
 
-export function parseOpusPacketDuration(frame: Uint8Array) {  // https://datatracker.ietf.org/doc/html/rfc6716#section-3.1
+export function parseOpusPacketDuration(frame: Uint8Array) {
+  // https://datatracker.ietf.org/doc/html/rfc6716#section-3.1
   const frameSizes = [
     // SILK only, narrow band
     10, 20, 40, 60,

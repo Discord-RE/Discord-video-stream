@@ -1,4 +1,8 @@
-import { FF_ENCODER_AV1_AMF, FF_ENCODER_H264_AMF, FF_ENCODER_HEVC_AMF } from "node-av";
+import {
+  FF_ENCODER_AV1_AMF,
+  FF_ENCODER_H264_AMF,
+  FF_ENCODER_HEVC_AMF,
+} from "node-av";
 import type { EncoderSettingsGetter } from "./index.js";
 
 export function amf() {

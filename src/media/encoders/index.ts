@@ -1,4 +1,8 @@
-import type { AVHWDeviceType, FFEncoderCodec, UnknownEncoderOptions } from "node-av";
+import type {
+  AVHWDeviceType,
+  FFEncoderCodec,
+  UnknownEncoderOptions,
+} from "node-av";
 import {
   AV_HWDEVICE_TYPE_AMF,
   AV_HWDEVICE_TYPE_CUDA,
@@ -58,14 +62,14 @@ export type EncoderSettingsGetter = (
   bitrateMax: number,
 ) => Partial<Record<SupportedVideoCodec, EncoderSettings>>;
 
+import { amf } from "./amf.js";
 import { merge } from "./merge.js";
 import { nvenc } from "./nvenc.js";
-import { software } from "./software.js";
-import { vaapi } from "./vaapi.js";
-import { amf } from "./amf.js";
 import { qsv } from "./qsv.js";
-import { videotoolbox } from "./videotoolbox.js";
+import { software } from "./software.js";
 import { v4l2m2m } from "./v4l2m2m.js";
+import { vaapi } from "./vaapi.js";
+import { videotoolbox } from "./videotoolbox.js";
 
 const Encoders = {
   software,

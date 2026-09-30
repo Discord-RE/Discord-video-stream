@@ -1,4 +1,10 @@
-import { FF_ENCODER_AV1_VAAPI, FF_ENCODER_H264_VAAPI, FF_ENCODER_HEVC_VAAPI, FF_ENCODER_VP8_VAAPI, FF_ENCODER_VP9_VAAPI } from "node-av";
+import {
+  FF_ENCODER_AV1_VAAPI,
+  FF_ENCODER_H264_VAAPI,
+  FF_ENCODER_HEVC_VAAPI,
+  FF_ENCODER_VP8_VAAPI,
+  FF_ENCODER_VP9_VAAPI,
+} from "node-av";
 import type { EncoderSettingsGetter } from "./index.js";
 
 type VaapiSettings = {

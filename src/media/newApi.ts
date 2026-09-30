@@ -24,14 +24,14 @@ import {
   Demuxer,
   Encoder,
   type EncoderOptions,
-  type Frame,
   FF_ENCODER_LIBOPUS,
   FilterAPI,
+  type Frame,
   HardwareContext,
   InputFormat,
+  type Packet,
   pipeline,
   Rational,
-  type Packet,
 } from "node-av";
 import pDebounce from "p-debounce";
 import sharp from "sharp";
@@ -586,8 +586,7 @@ export async function prepareStream(
     const hwChain =
       hw !== null &&
       hw.scaleFilter !== undefined &&
-      encodeHardware !== null &&
-      encodeHardware.testDecoder(vStream.codecpar.codecId)
+      encodeHardware?.testDecoder(vStream.codecpar.codecId)
         ? { hardware: encodeHardware, scaleFilter: hw.scaleFilter }
         : null;
 
@@ -715,10 +714,7 @@ export async function prepareStream(
   const promise = new Promise<void>((resolve, reject) => {
     Promise.all(
       outputs.map((output) => finished(output, { cleanup: true })),
-    ).then(
-      () => resolve(),
-      reject,
-    );
+    ).then(() => resolve(), reject);
     cancelSignal?.addEventListener(
       "abort",
       () => {
@@ -727,7 +723,10 @@ export async function prepareStream(
       { once: true },
     );
   });
-  promise.then(() => closePipeline(), () => closePipeline());
+  promise.then(
+    () => closePipeline(),
+    () => closePipeline(),
+  );
 
   let currentVolume = 1;
 
