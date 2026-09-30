@@ -1,4 +1,5 @@
 import { PassThrough, Readable } from "node:stream";
+import { finished } from "node:stream/promises";
 import Log from "debug-level";
 import {
   AV_CHANNEL_ORDER_NATIVE,
@@ -731,15 +732,13 @@ export async function prepareStream(
       : undefined;
 
   const outputs = [videoOut, ...(audioOut ? [audioOut] : [])];
-  let unfinished = outputs.length;
   const promise = new Promise<void>((resolve, reject) => {
-    for (const output of outputs) {
-      output.once("end", () => {
-        unfinished--;
-        if (unfinished === 0) resolve();
-      });
-      output.once("error", (e) => reject(e));
-    }
+    Promise.all(
+      outputs.map((output) => finished(output, { cleanup: true })),
+    ).then(
+      () => resolve(),
+      reject,
+    );
     cancelSignal?.addEventListener(
       "abort",
       () => {
