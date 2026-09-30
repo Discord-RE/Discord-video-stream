@@ -39,7 +39,7 @@ import type { SupportedVideoCodec } from "../utils.js";
 import { isFiniteNonZero } from "../utils.js";
 import { AudioStream } from "./AudioStream.js";
 import type { EncoderSettingsGetter } from "./encoders/index.js";
-import { Encoders, hardwareTypeForEncoder, hwScaleFilterForEncoder } from "./encoders/index.js";
+import { Encoders, hardwareForEncoder } from "./encoders/index.js";
 import { AVCodecID } from "./LibavCodecId.js";
 import { createDecoder } from "./LibavDecoder.js";
 import {
@@ -595,33 +595,34 @@ export async function prepareStream(
 
     // Deduce the hardware context from the encoder name (e.g. "h264_vaapi" ->
     // VAAPI), so any hardware encoder works without per-encoder special cases
-    const hwType = hardwareTypeForEncoder(encoderSettings.name);
+    const hw = hardwareForEncoder(encoderSettings.name);
     const encodeHardware =
-      hwType === null
+      hw === null
         ? null
-        : HardwareContext.create(hwType, encoderSettings.device);
-    if (hwType !== null && !encodeHardware) {
+        : HardwareContext.create(hw.deviceType, encoderSettings.device);
+    if (hw !== null && !encodeHardware) {
       closePipeline();
       throw new Error(
         `Failed to create hardware device context for ${encoderSettings.name}`,
       );
     }
 
-    // HW decode + HW scale only when the encoder's context can decode the
-    // input and the encoder has a hardware scaler; otherwise decode and scale
-    // on the CPU
-    const hwScale = hwScaleFilterForEncoder(encoderSettings.name);
-    const hwDecode =
+    // HW decode + HW scale when the encoder's context can decode the input
+    // and the encoder has a hardware scaler, else decode and scale on the CPU
+    const hwChain =
+      hw !== null &&
+      hw.scaleFilter !== undefined &&
       encodeHardware !== null &&
-      hwScale !== null &&
-      encodeHardware.getDecoderCodec(vStream.codecpar.codecId) !== null;
+      encodeHardware.getDecoderCodec(vStream.codecpar.codecId) !== null
+        ? { hardware: encodeHardware, scaleFilter: hw.scaleFilter }
+        : null;
 
     videoFilter = FilterAPI.create(
-      hwDecode
+      hwChain
         ? [
             // the upload passes hardware frames through untouched
             "hwupload",
-            `${hwScale}=w=${outWidth}:h=${outHeight}:format=nv12`,
+            `${hwChain.scaleFilter}=w=${outWidth}:h=${outHeight}:format=nv12`,
             ...(frameRate ? [`fps=${frameRate}`] : []),
           ].join(",")
         : [
@@ -630,11 +631,11 @@ export async function prepareStream(
             "format=yuv420p",
             ...(encoderSettings.outFilters ?? []),
           ].join(","),
-      { hardware: encodeHardware, signal: cancelSignal },
+      { hardware: hwChain?.hardware ?? null, signal: cancelSignal },
     );
 
     const decoderOptions: DecoderOptions = {
-      hardware: hwDecode ? encodeHardware : null,
+      hardware: hwChain?.hardware ?? null,
       exitOnError: false,
       signal: cancelSignal,
     };

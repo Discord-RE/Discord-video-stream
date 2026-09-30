@@ -23,44 +23,34 @@ export type EncoderSettings = {
 };
 
 /**
- * Hardware device types deduced from the encoder name suffix, e.g.
- * "h264_vaapi" -> VAAPI, "hevc_nvenc" -> CUDA. Encoders not listed here
- * accept system memory frames and self-manage their hardware contexts.
+ * Hardware info deduced from the encoder name suffix, e.g. "h264_vaapi" ->
+ * VAAPI, "hevc_nvenc" -> CUDA. Encoders not listed here accept system memory
+ * frames and self-manage their hardware contexts.
  */
-const hardwareTypeBySuffix: Record<string, AVHWDeviceType> = {
-  vaapi: AV_HWDEVICE_TYPE_VAAPI,
-  vulkan: AV_HWDEVICE_TYPE_VULKAN,
-  nvenc: AV_HWDEVICE_TYPE_CUDA,
-  cuda: AV_HWDEVICE_TYPE_CUDA,
-  qsv: AV_HWDEVICE_TYPE_QSV,
-  videotoolbox: AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
-  amf: AV_HWDEVICE_TYPE_AMF,
-  d3d11va: AV_HWDEVICE_TYPE_D3D11VA,
+export type HardwareEncoderInfo = {
+  /** Hardware device type used for the device context */
+  deviceType: AVHWDeviceType;
+  /** Hardware scale filter, when the encoder has one */
+  scaleFilter?: string;
 };
 
-export function hardwareTypeForEncoder(name: string): AVHWDeviceType | null {
-  const suffix = name.split("_").at(-1);
-  return (suffix && hardwareTypeBySuffix[suffix]) || null;
-}
-
-/**
- * Hardware scale filters for the encoders with a hardware scaler, deduced
- * from the encoder name suffix. Encoders not listed here have no hardware
- * scaler and always scale on the CPU.
- */
-const hwScaleFilterBySuffix: Record<string, string> = {
-  vaapi: "scale_vaapi",
-  vulkan: "scale_vulkan",
-  nvenc: "scale_cuda",
-  cuda: "scale_cuda",
-  qsv: "scale_qsv",
-  videotoolbox: "scale_vt",
-  amf: "vpp_amf",
+const hardwareBySuffix: Record<string, HardwareEncoderInfo> = {
+  vaapi: { deviceType: AV_HWDEVICE_TYPE_VAAPI, scaleFilter: "scale_vaapi" },
+  vulkan: { deviceType: AV_HWDEVICE_TYPE_VULKAN, scaleFilter: "scale_vulkan" },
+  nvenc: { deviceType: AV_HWDEVICE_TYPE_CUDA, scaleFilter: "scale_cuda" },
+  cuda: { deviceType: AV_HWDEVICE_TYPE_CUDA, scaleFilter: "scale_cuda" },
+  qsv: { deviceType: AV_HWDEVICE_TYPE_QSV, scaleFilter: "scale_qsv" },
+  videotoolbox: {
+    deviceType: AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
+    scaleFilter: "scale_vt",
+  },
+  amf: { deviceType: AV_HWDEVICE_TYPE_AMF, scaleFilter: "vpp_amf" },
+  d3d11va: { deviceType: AV_HWDEVICE_TYPE_D3D11VA },
 };
 
-export function hwScaleFilterForEncoder(name: string): string | null {
+export function hardwareForEncoder(name: string): HardwareEncoderInfo | null {
   const suffix = name.split("_").at(-1);
-  return (suffix && hwScaleFilterBySuffix[suffix]) || null;
+  return (suffix && hardwareBySuffix[suffix]) || null;
 }
 
 export type EncoderSettingsGetter = (
