@@ -713,7 +713,7 @@ export async function prepareStream(
         { signal: cancelSignal },
       ).video,
     ),
-    { objectMode: true, highWaterMark: 128 },
+    { objectMode: true },
   );
 
   const audioOut =
@@ -726,7 +726,7 @@ export async function prepareStream(
               { signal: cancelSignal },
             ).audio,
           ),
-          { objectMode: true, highWaterMark: 128 },
+          { objectMode: true },
         )
       : undefined;
 
