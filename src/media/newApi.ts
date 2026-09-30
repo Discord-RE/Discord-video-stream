@@ -39,7 +39,7 @@ import type { SupportedVideoCodec } from "../utils.js";
 import { isFiniteNonZero } from "../utils.js";
 import { AudioStream } from "./AudioStream.js";
 import type { EncoderSettingsGetter } from "./encoders/index.js";
-import { Encoders, hardwareTypeForEncoder } from "./encoders/index.js";
+import { Encoders, hardwareTypeForEncoder, hwScaleFilterForEncoder } from "./encoders/index.js";
 import { AVCodecID } from "./LibavCodecId.js";
 import { createDecoder } from "./LibavDecoder.js";
 import {
@@ -110,11 +110,6 @@ export type PrepareStreamOptions = {
    * returns an object containing encoder settings for the supported codecs
    */
   encoder: EncoderSettingsGetter;
-
-  /**
-   * Enable hardware accelerated decoding
-   */
-  hardwareAcceleratedDecoding: boolean;
 
   /**
    * Add some options to minimize latency
@@ -333,7 +328,6 @@ export async function prepareStream(
     bitrateAudio: 128,
     includeAudio: true,
     encoder: Encoders.software(),
-    hardwareAcceleratedDecoding: false,
     minimizeLatency: false,
     customHeaders: {
       "User-Agent":
@@ -383,10 +377,6 @@ export async function prepareStream(
 
       includeAudio: opts.includeAudio ?? defaultOptions.includeAudio,
 
-      hardwareAcceleratedDecoding:
-        opts.hardwareAcceleratedDecoding ??
-        defaultOptions.hardwareAcceleratedDecoding,
-
       minimizeLatency: opts.minimizeLatency ?? defaultOptions.minimizeLatency,
 
       customHeaders: {
@@ -416,7 +406,6 @@ export async function prepareStream(
     encoder: encoderGetter,
     includeAudio,
     bitrateAudio,
-    hardwareAcceleratedDecoding,
     minimizeLatency,
     customHeaders,
     customInputOptions,
@@ -504,10 +493,6 @@ export async function prepareStream(
   const vStream = demuxer.video();
   const aStream = demuxer.audio();
 
-  const videoHardware = hardwareAcceleratedDecoding
-    ? HardwareContext.auto()
-    : null;
-
   // video transcode pipeline (decoder -> filters -> encoder)
   let videoDecoder: Decoder | undefined;
   let videoFilter: FilterAPI | undefined;
@@ -553,6 +538,12 @@ export async function prepareStream(
   const inWidth = codecpar.width ?? 0;
   const inHeight = codecpar.height ?? 0;
   const sourceFramerate = streamFrameRate(vStream);
+  const { width: outWidth, height: outHeight } = computeScaledDims(
+    inWidth,
+    inHeight,
+    width,
+    height,
+  );
 
   let vInfo: VideoStreamInfo;
   if (noTranscoding) {
@@ -567,12 +558,6 @@ export async function prepareStream(
       avStream: vStream,
     };
   } else {
-    const { width: outWidth, height: outHeight } = computeScaledDims(
-      inWidth,
-      inHeight,
-      width,
-      height,
-    );
     vInfo = {
       index: vStream.index,
       // packets fed to Discord are the encoder output, not the input codec
@@ -622,21 +607,34 @@ export async function prepareStream(
       );
     }
 
+    // HW decode + HW scale only when the encoder's context can decode the
+    // input and the encoder has a hardware scaler; otherwise decode and scale
+    // on the CPU
+    const hwScale = hwScaleFilterForEncoder(encoderSettings.name);
+    const hwDecode =
+      encodeHardware !== null &&
+      hwScale !== null &&
+      encodeHardware.getDecoderCodec(vStream.codecpar.codecId) !== null;
+
     videoFilter = FilterAPI.create(
-      [
-        // hardware frames must be transferred to software before the software
-        // filters (scale) can process them
-        ...(videoHardware ? ["hwdownload"] : []),
-        `scale=${width}:${height}`,
-        ...(frameRate ? [`fps=${frameRate}`] : []),
-        "format=yuv420p",
-        ...(encoderSettings.outFilters ?? []),
-      ].join(","),
+      hwDecode
+        ? [
+            // the upload passes hardware frames through untouched
+            "hwupload",
+            `${hwScale}=w=${outWidth}:h=${outHeight}:format=nv12`,
+            ...(frameRate ? [`fps=${frameRate}`] : []),
+          ].join(",")
+        : [
+            `scale=${width}:${height}`,
+            ...(frameRate ? [`fps=${frameRate}`] : []),
+            "format=yuv420p",
+            ...(encoderSettings.outFilters ?? []),
+          ].join(","),
       { hardware: encodeHardware, signal: cancelSignal },
     );
 
     const decoderOptions: DecoderOptions = {
-      hardware: videoHardware,
+      hardware: hwDecode ? encodeHardware : null,
       exitOnError: false,
       signal: cancelSignal,
     };

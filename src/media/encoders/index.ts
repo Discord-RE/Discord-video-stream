@@ -43,6 +43,26 @@ export function hardwareTypeForEncoder(name: string): AVHWDeviceType | null {
   return (suffix && hardwareTypeBySuffix[suffix]) || null;
 }
 
+/**
+ * Hardware scale filters for the encoders with a hardware scaler, deduced
+ * from the encoder name suffix. Encoders not listed here have no hardware
+ * scaler and always scale on the CPU.
+ */
+const hwScaleFilterBySuffix: Record<string, string> = {
+  vaapi: "scale_vaapi",
+  vulkan: "scale_vulkan",
+  nvenc: "scale_cuda",
+  cuda: "scale_cuda",
+  qsv: "scale_qsv",
+  videotoolbox: "scale_vt",
+  amf: "vpp_amf",
+};
+
+export function hwScaleFilterForEncoder(name: string): string | null {
+  const suffix = name.split("_").at(-1);
+  return (suffix && hwScaleFilterBySuffix[suffix]) || null;
+}
+
 export type EncoderSettingsGetter = (
   bitrate: number,
   bitrateMax: number,
