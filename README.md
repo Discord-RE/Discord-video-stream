@@ -110,7 +110,7 @@ try {
             preset: "superfast"
         }
     });
-    const { command, output } = prepareStream("DIRECT VIDEO URL OR READABLE STREAM HERE", {
+    const { output, promise } = await prepareStream("DIRECT VIDEO URL OR READABLE STREAM HERE", {
         encoder,
 
         // Specify either width or height for aspect ratio aware scaling
@@ -123,8 +123,8 @@ try {
         bitrateVideoMax: 7500,
         videoCodec: Utils.normalizeVideoCodec("H264" /* or H265 */),
     });
-    command.on("error", (err, stdout, stderr) => {
-        // Handle ffmpeg errors here
+    promise.catch((err) => {
+        // Handle transcode pipeline errors here
     });
 
     await playStream(output, streamer, {
@@ -202,11 +202,17 @@ customHeaders?: Record<string, string>;
 /**
    * Custom input options to pass directly to ffmpeg
    * These will be added to the command *before* other options
+   *
+   * NOTE: only applies to the ffmpeg CLI, and is ignored when transcoding
+   * in-process
  */
 customInputOptions?: string[];
 /**
  * Custom ffmpeg flags/options to pass directly to ffmpeg
  * These will be added to the command *after* other options
+ *
+ * NOTE: only applies to the ffmpeg CLI, and is ignored when transcoding
+ * in-process
  */
 customFfmpegFlags?: string[];
 ```

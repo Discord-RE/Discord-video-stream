@@ -16,14 +16,12 @@
         "@lng2004/node-datachannel": "0.33.2-20260921",
         "@snazzah/davey": "^0.1.12",
         "debug-level": "^4.1.1",
-        "fluent-ffmpeg-simplified": "^0.2.0",
         "node-av": "^6.1.1",
         "p-debounce": "^5.1.0",
         "sharp": "^0.35.3"
     },
     "devDependencies": {
         "@biomejs/biome": "2.5.5",
-        "@types/fluent-ffmpeg": "^2.1.28",
         "@types/node": "^26.1.1",
         "@lng2004/discord.js-selfbot-v13": "^3.7.2",
         "pkg-pr-new": "^0.0.80",

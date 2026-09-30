@@ -1,9 +1,10 @@
+import type { FFEncoderCodec, UnknownEncoderOptions } from "node-av";
 import type { SupportedVideoCodec } from "../../utils.js";
 
 export type EncoderSettings = {
-  name: string;
-  options: string[];
-  globalOptions?: string[];
+  name: FFEncoderCodec;
+  options: UnknownEncoderOptions;
+  globalOptions?: Record<string, string>;
   outFilters?: string[];
 };
 
