@@ -5,8 +5,8 @@ import { Log } from "debug-level";
 import {
   avGetCodecName,
   BitStreamFilterAPI,
-  Demuxer,
   type CodecParameters,
+  Demuxer,
   type Packet,
   type Rational,
   type Stream,
