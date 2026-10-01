@@ -1,7 +1,7 @@
 import { Writable } from "node:stream";
 import { setTimeout } from "node:timers/promises";
 import { Log } from "debug-level";
-import type { Packet } from "node-av";
+import { AV_NOPTS_VALUE, type Packet } from "node-av";
 
 export class BaseMediaStream extends Writable {
   private _pts?: number;
@@ -97,6 +97,18 @@ export class BaseMediaStream extends Writable {
     if (!data) {
       frame.free();
       callback();
+      return;
+    }
+
+    /*
+     * AV_NOPTS_VALUE: packets without a presentation timestamp (e.g. the
+     * first packets of an RTSP stream) are sent immediately, without pacing,
+     * and without poisoning the timing compensation.
+     */
+    if (pts === AV_NOPTS_VALUE) {
+      await this._sendFrame(Buffer.from(data), 0);
+      frame.free();
+      callback(null);
       return;
     }
 
