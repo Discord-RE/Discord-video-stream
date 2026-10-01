@@ -81,20 +81,19 @@ async function streamPuppeteer(url: string, streamer: Streamer, opts: BrowserOpt
     const stream = await getStream(page, { audio: true, video: true, mimeType: "video/webm;codecs=vp8,opus" }); 
 
     try {
-        const { command, output } = prepareStream(stream, {
+        const { output, promise } = await prepareStream(stream, {
             frameRate: config.streamOpts.fps,
             bitrateVideo: config.streamOpts.bitrateKbps,
             bitrateVideoMax: config.streamOpts.maxBitrateKbps,
-            hardwareAcceleratedDecoding: config.streamOpts.hardware_acceleration,
             videoCodec: Utils.normalizeVideoCodec(config.streamOpts.videoCodec)
         }, cancelSignal);
-        command.on("error", (err, stdout, stderr) => {
-            console.log("An error occurred with ffmpeg");
+        promise.catch((err) => {
+            console.log("An error occurred while preparing the stream");
             console.log(err)
         });
-        
+
         await playStream(output, streamer, {
-            // Use this to catch up with ffmpeg
+            // Use this to catch up with the transcoder
             readrateInitialBurst: 10
         }, cancelSignal);
         console.log("Finished playing video");

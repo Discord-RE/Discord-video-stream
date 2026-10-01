@@ -38,21 +38,22 @@ streamer.client.on("messageCreate", async (msg) => {
         controller?.abort();
         controller = new AbortController();
 
-        const { command, output } = prepareStream(args.url, {
+        const { output, promise } = await prepareStream(args.url, {
             width: config.streamOpts.width,
             height: config.streamOpts.height,
             frameRate: config.streamOpts.fps,
             bitrateVideo: config.streamOpts.bitrateKbps,
             bitrateVideoMax: config.streamOpts.maxBitrateKbps,
-            hardwareAcceleratedDecoding: config.streamOpts.hardware_acceleration,
             videoCodec: Utils.normalizeVideoCodec(config.streamOpts.videoCodec)
         }, controller.signal);
-        command.on("error", (err) => {
-            console.log("An error happened with ffmpeg");
+        promise.catch((err) => {
+            console.log("An error happened while preparing the stream");
             console.log(err);
         });
         await playStream(output, streamer, undefined, controller.signal)
             .catch(() => controller.abort());
+
+        console.log("Finished playing video");
     } else if (msg.content.startsWith("$play-cam")) {
         const args = parseArgs(msg.content);
         if (!args) return;
@@ -72,21 +73,22 @@ streamer.client.on("messageCreate", async (msg) => {
         controller?.abort();
         controller = new AbortController();
 
-        const { command, output } = prepareStream(args.url, {
+        const { output, promise } = await prepareStream(args.url, {
             width: config.streamOpts.width,
             height: config.streamOpts.height,
             frameRate: config.streamOpts.fps,
             bitrateVideo: config.streamOpts.bitrateKbps,
             bitrateVideoMax: config.streamOpts.maxBitrateKbps,
-            hardwareAcceleratedDecoding: config.streamOpts.hardware_acceleration,
             videoCodec: Utils.normalizeVideoCodec(config.streamOpts.videoCodec)
-        }, controller.signal)
-        command.on("error", (err) => {
-            console.log("An error happened with ffmpeg");
+        }, controller.signal);
+        promise.catch((err) => {
+            console.log("An error happened while preparing the stream");
             console.log(err);
         });
         await playStream(output, streamer, undefined, controller.signal)
             .catch(() => controller.abort());
+
+        console.log("Finished playing video");
     } else if (msg.content.startsWith("$disconnect")) {
         controller?.abort();
         streamer.leaveVoice();

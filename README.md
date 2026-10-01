@@ -100,8 +100,9 @@ Start sending media
 ```typescript
 import { prepareStream, playStream, Utils, Encoders } from "@dank074/discord-video-stream"
 try {
-    // NVENC is also available, change Encoders.software to Encoders.nvenc and
-    // adapt the settings
+    // Hardware encoders are also available: Encoders.nvenc, Encoders.qsv,
+    // Encoders.videotoolbox, Encoders.amf, Encoders.v4l2m2m and
+    // Encoders.vaapi (see the encoder docs for their settings)
     let encoder = Encoders.software({
         x264: {
             preset: "superfast"
@@ -181,11 +182,6 @@ bitrateAudio?: number;
  * Enable audio output
  */
 includeAudio?: boolean;
-/**
- * Enables hardware accelerated video decoding. Enabling this option might result in an exception
- * being thrown by Ffmpeg process if your system does not support hardware acceleration
- */
-hardwareAcceleratedDecoding?: boolean;
 /**
  * Output video codec. **Only** supports H264, H265, and VP8 currently
  */
