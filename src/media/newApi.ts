@@ -444,11 +444,7 @@ export async function prepareStream(
       });
     } else {
       const probed = await probeFormat(input);
-      if (!probed) {
-        input.destroy();
-        throw new Error("Input stream ended before its format could be probed");
-      }
-      if (!probed.format?.name) {
+      if (!probed?.format?.name) {
         input.destroy();
         throw new Error("Could not detect the input format");
       }
