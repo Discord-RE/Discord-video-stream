@@ -1,7 +1,38 @@
-import { PassThrough, type Readable } from "node:stream";
+import { PassThrough, Readable } from "node:stream";
+import { finished } from "node:stream/promises";
 import Log from "debug-level";
-import { FFmpegCommand } from "fluent-ffmpeg-simplified";
-import { AV_PKT_FLAG_KEY, type Packet } from "node-av";
+import {
+  AV_CHANNEL_ORDER_NATIVE,
+  AV_CODEC_FLAG_LOW_DELAY,
+  AV_LOG_DEBUG,
+  AV_LOG_ERROR,
+  AV_LOG_FATAL,
+  AV_LOG_INFO,
+  AV_LOG_PANIC,
+  AV_LOG_QUIET,
+  AV_LOG_TRACE,
+  AV_LOG_VERBOSE,
+  AV_LOG_WARNING,
+  AV_PKT_FLAG_KEY,
+  Log as AVLog,
+  type AVLogLevel,
+  avGetCodecName,
+  type BitStreamFilterAPI,
+  type CodecContext,
+  Decoder,
+  type DecoderOptions,
+  Demuxer,
+  Encoder,
+  type EncoderOptions,
+  FF_ENCODER_LIBOPUS,
+  FilterAPI,
+  type Frame,
+  HardwareContext,
+  InputFormat,
+  type Packet,
+  pipeline,
+  Rational,
+} from "node-av";
 import pDebounce from "p-debounce";
 import sharp from "sharp";
 import type { Streamer } from "../client/index.js";
@@ -10,11 +41,17 @@ import type { SupportedVideoCodec } from "../utils.js";
 import { isFiniteNonZero } from "../utils.js";
 import { AudioStream } from "./AudioStream.js";
 import type { EncoderSettingsGetter } from "./encoders/index.js";
-import { Encoders } from "./encoders/index.js";
+import { Encoders, hardwareForEncoder } from "./encoders/index.js";
 import { AVCodecID } from "./LibavCodecId.js";
 import { createDecoder } from "./LibavDecoder.js";
-import type { VideoStreamInfo } from "./LibavDemuxer.js";
-import { demux } from "./LibavDemuxer.js";
+import {
+  type AudioStreamInfo,
+  allowedVideoCodec,
+  createVideoBitStreamFilters,
+  demux,
+  streamFrameRate,
+  type VideoStreamInfo,
+} from "./LibavDemuxer.js";
 import { VideoStream } from "./VideoStream.js";
 
 export type PrepareStreamOptions = {
@@ -77,11 +114,6 @@ export type PrepareStreamOptions = {
   encoder: EncoderSettingsGetter;
 
   /**
-   * Enable hardware accelerated decoding
-   */
-  hardwareAcceleratedDecoding: boolean;
-
-  /**
    * Add some options to minimize latency
    */
   minimizeLatency: boolean;
@@ -94,12 +126,18 @@ export type PrepareStreamOptions = {
   /**
    * Custom input options to pass directly to ffmpeg
    * These will be added to the command before other options
+   *
+   * NOTE: this option only applies to the ffmpeg CLI, and is ignored when
+   * transcoding in-process
    */
   customInputOptions: string[];
 
   /**
    * Custom ffmpeg flags/options to pass directly to ffmpeg
    * These will be added to the command after other options
+   *
+   * NOTE: this option only applies to the ffmpeg CLI, and is ignored when
+   * transcoding in-process
    */
   customFfmpegFlags: string[];
 
@@ -123,15 +161,139 @@ export type Controller = {
   setVolume(newVolume: number): Promise<boolean>;
 };
 
-export function prepareStream(
+export type PreparedStream = {
+  /**
+   * The encoded video packet stream, ready to be sent to Discord
+   */
+  video: VideoStreamInfo & { stream: Readable };
+
+  /**
+   * The encoded audio packet stream, ready to be sent to Discord
+   */
+  audio?: AudioStreamInfo & { stream: Readable };
+};
+
+export type PrepareStreamResult = {
+  output: PreparedStream;
+
+  /**
+   * Resolves when the transcode pipeline finished processing the input,
+   * rejects when the pipeline failed or was cancelled
+   */
+  promise: Promise<unknown>;
+
+  controller: Controller;
+};
+
+const videoCodecMap: Record<number, SupportedVideoCodec> = {
+  [AVCodecID.AV_CODEC_ID_H264]: "H264",
+  [AVCodecID.AV_CODEC_ID_H265]: "H265",
+  [AVCodecID.AV_CODEC_ID_VP8]: "VP8",
+  [AVCodecID.AV_CODEC_ID_VP9]: "VP9",
+  [AVCodecID.AV_CODEC_ID_AV1]: "AV1",
+};
+
+const preparedVideoCodecMap: Record<SupportedVideoCodec, AVCodecID> = {
+  H264: AVCodecID.AV_CODEC_ID_H264,
+  H265: AVCodecID.AV_CODEC_ID_HEVC,
+  VP8: AVCodecID.AV_CODEC_ID_VP8,
+  VP9: AVCodecID.AV_CODEC_ID_VP9,
+  AV1: AVCodecID.AV_CODEC_ID_AV1,
+};
+
+const avLogLevels = {
+  quiet: AV_LOG_QUIET,
+  panic: AV_LOG_PANIC,
+  fatal: AV_LOG_FATAL,
+  error: AV_LOG_ERROR,
+  warning: AV_LOG_WARNING,
+  info: AV_LOG_INFO,
+  verbose: AV_LOG_VERBOSE,
+  debug: AV_LOG_DEBUG,
+  trace: AV_LOG_TRACE,
+} satisfies Record<PrepareStreamOptions["logLevel"], AVLogLevel>;
+
+function roundEven(n: number) {
+  return n % 2 === 0 ? n : n + 1;
+}
+
+/**
+ * Compute the output video dimensions like ffmpeg's scale filter does with
+ * negative values (negative values = resize by aspect ratio,
+ * see https://trac.ffmpeg.org/wiki/Scaling)
+ */
+function computeScaledDims(
+  inWidth: number,
+  inHeight: number,
+  width: number,
+  height: number,
+) {
+  if (inWidth <= 0 || inHeight <= 0) {
+    return {
+      width: width > 0 ? width : inWidth,
+      height: height > 0 ? height : inHeight,
+    };
+  }
+  if (width < 0 && height < 0) {
+    return { width: roundEven(inWidth), height: roundEven(inHeight) };
+  }
+  if (width < 0) {
+    return { width: roundEven((height * inWidth) / inHeight), height };
+  }
+  if (height < 0) {
+    return { width, height: roundEven((width * inHeight) / inWidth) };
+  }
+  return { width, height };
+}
+
+/**
+ * Read the first bytes of the stream, mirroring ffmpeg's incremental probing,
+ * to detect the container format. `Demuxer.open` requires an explicit format
+ * for Readable inputs, so the consumed bytes are replayed into the demuxer
+ * through a wrapper stream. The detected format is returned alongside the
+ * buffer so it doesn't have to be probed again.
+ */
+async function probeFormat(
+  stream: Readable,
+): Promise<{ buffer: Buffer; format: InputFormat } | null> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  // destroyOnReturn: false, so the stream survives when the probe succeeds
+  // early and the remaining data is still needed
+  for await (const chunk of stream.iterator({ destroyOnReturn: false })) {
+    chunks.push(chunk);
+    size += chunk.length;
+    if (size >= 2 ** 20) break;
+    const buffer = Buffer.concat(chunks);
+    const format = InputFormat.probe(buffer);
+    if (format) return { buffer, format };
+  }
+  return null;
+}
+
+/**
+ * Strip the null flush markers a pipeline generator yields at the end of the
+ * stream, so the generator can be consumed by `Readable.from`, which rejects
+ * null values instead of treating them as the end of the stream
+ * (see https://github.com/nodejs/node/issues/32845).
+ */
+function withoutFlushMarkers(source: AsyncGenerator<Packet | Frame | null>) {
+  return (async function* () {
+    for await (const packet of source) {
+      if (packet === null) return;
+      yield packet;
+    }
+  })();
+}
+
+export async function prepareStream(
   input: string | Readable,
   options: Partial<PrepareStreamOptions> = {},
   cancelSignal?: AbortSignal,
-) {
+): Promise<PrepareStreamResult> {
   cancelSignal?.throwIfAborted();
 
   const logger = new Log("prepareStream");
-  const loggerFFmpeg = new Log("prepareStream:ffmpeg");
   const defaultOptions = {
     noTranscoding: false,
     // negative values = resize by aspect ratio, see https://trac.ffmpeg.org/wiki/Scaling
@@ -144,7 +306,6 @@ export function prepareStream(
     bitrateAudio: 128,
     includeAudio: true,
     encoder: Encoders.software(),
-    hardwareAcceleratedDecoding: false,
     minimizeLatency: false,
     customHeaders: {
       "User-Agent":
@@ -194,10 +355,6 @@ export function prepareStream(
 
       includeAudio: opts.includeAudio ?? defaultOptions.includeAudio,
 
-      hardwareAcceleratedDecoding:
-        opts.hardwareAcceleratedDecoding ??
-        defaultOptions.hardwareAcceleratedDecoding,
-
       minimizeLatency: opts.minimizeLatency ?? defaultOptions.minimizeLatency,
 
       customHeaders: {
@@ -216,6 +373,31 @@ export function prepareStream(
   }
 
   const mergedOptions = mergeOptions(options);
+  const {
+    noTranscoding,
+    width,
+    height,
+    frameRate,
+    bitrateVideo,
+    bitrateVideoMax,
+    videoCodec,
+    encoder: encoderGetter,
+    includeAudio,
+    bitrateAudio,
+    minimizeLatency,
+    customHeaders,
+    customInputOptions,
+    customFfmpegFlags,
+    logLevel,
+  } = mergedOptions;
+
+  AVLog.setLevel(avLogLevels[logLevel]);
+
+  if (customInputOptions.length > 0 || customFfmpegFlags.length > 0) {
+    logger.warn(
+      "customInputOptions and customFfmpegFlags only apply to the ffmpeg CLI; they are ignored when transcoding in-process",
+    );
+  }
 
   let isHttpUrl = false;
   let isHls = false;
@@ -227,174 +409,346 @@ export function prepareStream(
     isSrt = input.startsWith("srt://");
   }
 
-  const output = new PassThrough();
-
-  // command creation
-  const command = new FFmpegCommand();
-  command.on("stderr", (line) => {
-    loggerFFmpeg.debug(line);
-  });
-  command.input(input);
-  command.inputOptions(
-    "-y",
-    "-loglevel",
-    mergedOptions.logLevel,
-    "-nostats",
-    "-stdin",
-  );
-
-  // input options
-  if (
-    mergedOptions.customInputOptions &&
-    mergedOptions.customInputOptions.length > 0
-  ) {
-    command.inputOptions(mergedOptions.customInputOptions);
-  }
-
-  const { hardwareAcceleratedDecoding, minimizeLatency, customHeaders } =
-    mergedOptions;
-  if (hardwareAcceleratedDecoding) command.inputOptions("-hwaccel", "auto");
+  const inputOptions: Record<string, string | number> = {};
 
   if (minimizeLatency) {
-    command.inputOptions(
-      "-fflags nobuffer",
-      "-flags low_delay",
-      "-flush_packets 1",
-      "-max_delay 100000",
-    );
+    inputOptions.fflags = "nobuffer";
+    inputOptions.max_delay = 100000;
   }
 
   if (isHttpUrl) {
-    command.inputOptions(
-      "-headers",
-      "'" +
-        Object.entries(customHeaders)
-          .map(([k, v]) => `${k}: ${v}`)
-          .join("\r\n") +
-        "'",
-    );
+    inputOptions.headers = Object.entries(customHeaders)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join("\r\n");
     if (!isHls) {
-      command.inputOptions([
-        "-reconnect 1",
-        "-reconnect_at_eof 1",
-        "-reconnect_streamed 1",
-        "-reconnect_delay_max 4294",
-      ]);
+      inputOptions.reconnect = "1";
+      inputOptions.reconnect_at_eof = "1";
+      inputOptions.reconnect_streamed = "1";
+      inputOptions.reconnect_delay_max = "4294";
     }
   }
 
   if (isSrt) {
-    command.inputOptions("-scan_all_pmts 0");
+    inputOptions.scan_all_pmts = "0";
   }
 
-  // general output options
-  command.output(output).format("nut");
+  // demuxer creation
+  let demuxer: Demuxer;
+  let probeWrapper: PassThrough | undefined;
+  try {
+    if (typeof input === "string") {
+      demuxer = await Demuxer.open(input, {
+        options: inputOptions,
+        bufferSize: 8192,
+        signal: cancelSignal,
+      });
+    } else {
+      const probed = await probeFormat(input);
+      if (!probed?.format?.name) {
+        input.destroy();
+        throw new Error("Could not detect the input format");
+      }
+      probeWrapper = new PassThrough();
+      probeWrapper.write(probed.buffer);
+      input.pipe(probeWrapper);
+      demuxer = await Demuxer.open(probeWrapper, {
+        options: inputOptions,
+        bufferSize: 8192,
+        signal: cancelSignal,
+        format: probed.format.name,
+      });
+    }
+  } catch (e) {
+    if (typeof input !== "string") input.destroy();
+    throw new Error("Failed to open input", { cause: e });
+  }
 
-  // video setup
-  const {
-    noTranscoding,
+  const vStream = demuxer.video();
+  const aStream = demuxer.audio();
+
+  // video transcode pipeline (decoder -> filters -> encoder)
+  let videoDecoder: Decoder | undefined;
+  let videoFilter: FilterAPI | undefined;
+  let videoEncoder: Encoder | undefined;
+
+  // audio pipeline (decoder -> volume filter -> encoder)
+  let audioDecoder: Decoder | undefined;
+  let audioFilter: FilterAPI | undefined;
+  let audioEncoder: Encoder | undefined;
+
+  let vbsf: BitStreamFilterAPI[] = [];
+
+  const closePipeline = () => {
+    demuxer.close();
+    probeWrapper?.destroy();
+    if (typeof input !== "string") input.destroy();
+    for (const filter of vbsf) filter.close();
+    videoFilter?.close();
+    videoDecoder?.close();
+    videoEncoder?.close();
+    audioFilter?.close();
+    audioDecoder?.close();
+    audioEncoder?.close();
+  };
+
+  if (!vStream) {
+    closePipeline();
+    throw new Error("No video stream in media");
+  }
+
+  if (noTranscoding && !allowedVideoCodec.has(vStream.codecpar.codecId)) {
+    const codecName = avGetCodecName(vStream.codecpar.codecId);
+    closePipeline();
+    throw new Error(`Video codec ${codecName} is not allowed`);
+  }
+
+  // only the passthrough path needs the mp4 -> annexb conversion: encoders
+  // created without a global header flag already emit annexb, with the
+  // parameter sets repeated before each keyframe
+  vbsf = noTranscoding ? createVideoBitStreamFilters(vStream) : [];
+
+  const codecpar = vStream.codecpar;
+  const inWidth = codecpar.width ?? 0;
+  const inHeight = codecpar.height ?? 0;
+  const sourceFramerate = streamFrameRate(vStream);
+  const { width: outWidth, height: outHeight } = computeScaledDims(
+    inWidth,
+    inHeight,
     width,
     height,
-    frameRate,
-    bitrateVideo,
-    bitrateVideoMax,
-    videoCodec,
-    encoder,
-  } = mergedOptions;
-  command.outputOptions("-map 0:v");
+  );
 
+  let vInfo: VideoStreamInfo;
   if (noTranscoding) {
-    command.videoCodec("copy");
+    vInfo = {
+      index: vStream.index,
+      codec: codecpar.codecId,
+      codecpar,
+      width: inWidth,
+      height: inHeight,
+      framerate_num: sourceFramerate.num,
+      framerate_den: sourceFramerate.den,
+      avStream: vStream,
+    };
   } else {
-    command.videoFilters(`scale=${width}:${height}`);
+    vInfo = {
+      index: vStream.index,
+      // packets fed to Discord are the encoder output, not the input codec
+      codec: preparedVideoCodecMap[videoCodec],
+      codecpar,
+      width: outWidth,
+      height: outHeight,
+      framerate_num: frameRate ?? sourceFramerate.num,
+      framerate_den: frameRate ? 1 : sourceFramerate.den,
+      avStream: vStream,
+    };
+  }
+  logger.info({ info: vInfo }, "Prepared video stream");
 
-    if (frameRate) command.fps(frameRate);
+  let aInfo: AudioStreamInfo | undefined;
+  if (includeAudio && aStream) {
+    aInfo = {
+      index: aStream.index,
+      codec: aStream.codecpar.codecId,
+      codecpar: aStream.codecpar,
+      sample_rate: aStream.codecpar.sampleRate || 0,
+      avStream: aStream,
+    };
+    logger.info({ info: aInfo }, "Prepared audio stream");
+  }
 
-    command.outputOptions([
-      "-b:v",
-      `${bitrateVideo}k`,
-      "-maxrate:v",
-      `${bitrateVideoMax}k`,
-      "-bufsize:v",
-      `${Math.round(bitrateVideo / 2)}k`,
-      "-bf",
-      "0",
-      "-pix_fmt",
-      "yuv420p",
-      "-force_key_frames",
-      "expr:gte(t,n_forced*1)",
-    ]);
-
-    const encoderSettings = encoder(bitrateVideo, bitrateVideoMax)[videoCodec];
-    if (!encoderSettings)
+  if (!noTranscoding) {
+    const encoderSettings = encoderGetter(bitrateVideo, bitrateVideoMax)[
+      videoCodec
+    ];
+    if (!encoderSettings) {
+      closePipeline();
       throw new Error(`Encoder settings not specified for ${videoCodec}`);
-    command
-      .videoCodec(encoderSettings.name)
-      .videoFilters(encoderSettings.outFilters ?? [])
-      .outputOptions(encoderSettings.options)
-      .outputOptions(encoderSettings.globalOptions ?? []);
+    }
+
+    // Deduce the hardware context from the encoder name (e.g. "h264_vaapi" ->
+    // VAAPI), so any hardware encoder works without per-encoder special cases
+    const hw = hardwareForEncoder(encoderSettings.name);
+    const encodeHardware =
+      hw && HardwareContext.create(hw.deviceType, encoderSettings.device);
+    if (hw && !encodeHardware) {
+      closePipeline();
+      throw new Error(
+        `Failed to create hardware device context for ${encoderSettings.name}`,
+      );
+    }
+
+    // HW decode + HW scale when the encoder's context can decode the input
+    // and the encoder has a hardware scaler, else decode and scale on the CPU.
+    // The check must be an actual hardware test: getDecoderCodec only reports
+    // the registered hw configs, which say nothing about driver support.
+    const hwChain =
+      hw?.scaleFilter && encodeHardware?.testDecoder(vStream.codecpar.codecId)
+        ? { hardware: encodeHardware, scaleFilter: hw.scaleFilter }
+        : null;
+
+    const outFilters = encoderSettings.outFilters;
+    videoFilter = FilterAPI.create(
+      hwChain
+        ? [
+            // the upload passes hardware frames through untouched
+            "hwupload",
+            `${hwChain.scaleFilter}=w=${outWidth}:h=${outHeight}:format=nv12`,
+            ...(frameRate ? [`fps=${frameRate}`] : []),
+          ].join(",")
+        : [
+            `scale=${width}:${height}`,
+            ...(frameRate ? [`fps=${frameRate}`] : []),
+            // the outFilters handle the pixel format when present (e.g. the
+            // vaapi upload filterchain), so the default 4:2:0 conversion is
+            // only needed without them
+            ...(outFilters?.length ? outFilters : ["format=yuv420p"]),
+          ].join(","),
+      // the encode context always goes to the filterchain: the upload filters
+      // (hwupload) need it for their hardware frames context
+      { hardware: encodeHardware, signal: cancelSignal },
+    );
+
+    const decoderOptions: DecoderOptions = {
+      hardware: hwChain?.hardware ?? null,
+      exitOnError: false,
+      signal: cancelSignal,
+    };
+    if (minimizeLatency) {
+      decoderOptions.configure = (ctx: CodecContext) => {
+        ctx.setFlags(AV_CODEC_FLAG_LOW_DELAY);
+      };
+    }
+    videoDecoder = await Decoder.create(vStream, decoderOptions);
+
+    // pass the target framerate explicitly: the framerate the encoder derives
+    // itself (from the filter/decoder stream) may be wrong or missing, which
+    // breaks the encoder's average bitrate calculations
+    const targetFramerate = frameRate
+      ? new Rational(frameRate, 1)
+      : sourceFramerate;
+    const targetFps =
+      targetFramerate.den > 0 ? targetFramerate.num / targetFramerate.den : 0;
+    const encoderOptions: EncoderOptions = {
+      filter: videoFilter,
+      decoder: videoDecoder,
+      autoFormat: true,
+      context: {
+        ...(targetFramerate.num > 0 && targetFramerate.den > 0
+          ? { framerate: targetFramerate }
+          : {}),
+        bitRate: `${bitrateVideo}k`,
+        rcMaxRate: `${bitrateVideoMax}k`,
+        rcBufferSize: `${Math.round(bitrateVideo / 2)}k`,
+        // keyframes every ~1s, like ffmpeg's `-force_key_frames expr:gte(t,n_forced*1)`
+        gopSize: Math.max(1, Math.round(targetFps > 0 ? targetFps : 30)),
+        // B-frames are not supported by Discord's packetizer
+        maxBFrames: 0,
+      },
+      options: encoderSettings.options,
+      signal: cancelSignal,
+    };
+    videoEncoder = await Encoder.create(encoderSettings.name, encoderOptions);
   }
 
-  // audio setup
-  const { includeAudio, bitrateAudio } = mergedOptions;
-  if (includeAudio)
-    command
-      .outputOptions("-map 0:a:0?")
-      .audioChannels(2)
-      /*
-       * I don't have much surround sound material to test this with,
-       * if you do and you have better settings for this, feel free to
-       * contribute!
-       */
-      .outputOptions("-lfe_mix_level 1")
-      .audioFrequency(48000)
-      .audioCodec("libopus")
-      .audioBitrate(`${bitrateAudio}k`)
-      .audioFilters("volume@internal_lib=1.0");
-
-  // Add custom ffmpeg flags
-  if (
-    mergedOptions.customFfmpegFlags &&
-    mergedOptions.customFfmpegFlags.length > 0
-  ) {
-    command.outputOptions(mergedOptions.customFfmpegFlags);
+  if (includeAudio && aStream) {
+    audioDecoder = await Decoder.create(aStream, {
+      exitOnError: false,
+      // Discord expects 48kHz stereo opus
+      resample: {
+        sampleRate: 48000,
+        channelLayout: {
+          nbChannels: 2,
+          order: AV_CHANNEL_ORDER_NATIVE,
+          mask: 3n,
+        },
+      },
+      signal: cancelSignal,
+    });
+    audioFilter = FilterAPI.create("volume@internal_lib=1.0", {
+      signal: cancelSignal,
+    });
+    audioEncoder = await Encoder.create(FF_ENCODER_LIBOPUS, {
+      autoResample: true,
+      decoder: audioDecoder,
+      filter: audioFilter,
+      context: { bitRate: `${bitrateAudio}k` },
+      signal: cancelSignal,
+    });
   }
 
-  // realtime volume control via ffmpeg's interactive mode (stdin)
-  // ffmpeg reads single-key commands from stdin unless `-nostdin` is given.
-  // Pressing `c` lets us send a command to a filter:
-  //   <target> <time>|-1 <command>[ <argument>]
-  // e.g. `cvolume@internal_lib -1 volume 0.5\n` sets the `volume` filter
-  // named `internal_lib` to 0.5. No extra dependencies (e.g. libzmq) needed.
+  // the pipeline generators signal EOF by yielding null, which Readable.from
+  // rejects instead of treating as the end of the stream
+  // (see https://github.com/nodejs/node/issues/32845), so the flush markers
+  // are filtered out before they reach it
+  const videoOut = Readable.from(
+    withoutFlushMarkers(
+      pipeline(
+        { video: demuxer },
+        {
+          video: noTranscoding
+            ? [vbsf]
+            : [videoDecoder, videoFilter, videoEncoder],
+        },
+        { signal: cancelSignal },
+      ).video,
+    ),
+    { objectMode: true },
+  );
+
+  const audioOut =
+    includeAudio && aStream
+      ? Readable.from(
+          withoutFlushMarkers(
+            pipeline(
+              { audio: demuxer },
+              { audio: [audioDecoder, audioFilter, audioEncoder] },
+              { signal: cancelSignal },
+            ).audio,
+          ),
+          { objectMode: true },
+        )
+      : undefined;
+
+  const outputs = [videoOut, ...(audioOut ? [audioOut] : [])];
+  const promise = new Promise<void>((resolve, reject) => {
+    Promise.all(
+      outputs.map((output) => finished(output, { cleanup: true })),
+    ).then(() => resolve(), reject);
+    cancelSignal?.addEventListener(
+      "abort",
+      () => {
+        reject(cancelSignal.reason);
+      },
+      { once: true },
+    );
+  });
+  promise.then(
+    () => closePipeline(),
+    () => closePipeline(),
+  );
+
   let currentVolume = 1;
 
-  command.once("start", (cmdline) => {
-    logger.debug(`Starting ffmpeg: ${cmdline}`);
-  });
-  const promise = command.run(cancelSignal);
-
   return {
-    command,
-    output,
-    promise: promise as Promise<unknown>,
+    output: {
+      video: { ...vInfo, stream: videoOut },
+      audio: audioOut && aInfo ? { ...aInfo, stream: audioOut } : undefined,
+    },
+    promise,
     controller: {
       get volume() {
         return currentVolume;
       },
       async setVolume(newVolume: number) {
         if (!Number.isFinite(newVolume) || newVolume < 0) return false;
-        if (!includeAudio) return false;
+        if (!audioFilter) return false;
         try {
-          const stdin = promise.stdin;
-          if (!stdin || stdin.destroyed || stdin.closed) return false;
-          // `c` = send command to first matching filter, then
-          // `<target> <time>|-1 <command>[ <argument>]\n`.
-          // Must be a single write with no newline after `c`, otherwise
-          // ffmpeg sees an empty command and reports a parse error.
-          const cmd = `cvolume@internal_lib -1 volume ${newVolume}\n`;
-          await new Promise<void>((resolve, reject) => {
-            stdin.write(cmd, (err) => (err ? reject(err) : resolve()));
-          });
+          audioFilter.sendCommand(
+            "volume@internal_lib",
+            "volume",
+            String(newVolume),
+          );
           currentVolume = newVolume;
           return true;
         } catch {
@@ -450,8 +804,14 @@ export type PlayStreamOptions = {
   streamPreview: boolean;
 };
 
+function isPreparedStream(
+  input: Readable | PreparedStream,
+): input is PreparedStream {
+  return !Readable.isReadable(input as Readable);
+}
+
 export async function playStream(
-  input: Readable,
+  input: Readable | PreparedStream,
   streamer: Streamer,
   options: Partial<PlayStreamOptions> = {},
   cancelSignal?: AbortSignal,
@@ -508,22 +868,16 @@ export async function playStream(
   const mergedOptions = mergeOptions(options);
   logger.debug({ options: mergedOptions }, "Merged options");
 
-  logger.debug("Initializing demuxer");
-  const { video, audio } = await demux(input, {
-    format: mergedOptions.format,
-  });
+  const { video, audio } = isPreparedStream(input)
+    ? input
+    : await demux(input, {
+        format: mergedOptions.format,
+      });
   cancelSignal?.throwIfAborted();
 
   if (!video) throw new Error("No video stream in media");
 
   const cleanupFuncs: (() => unknown)[] = [];
-  const videoCodecMap: Record<number, SupportedVideoCodec> = {
-    [AVCodecID.AV_CODEC_ID_H264]: "H264",
-    [AVCodecID.AV_CODEC_ID_H265]: "H265",
-    [AVCodecID.AV_CODEC_ID_VP8]: "VP8",
-    [AVCodecID.AV_CODEC_ID_VP9]: "VP9",
-    [AVCodecID.AV_CODEC_ID_AV1]: "AV1",
-  };
 
   let conn: WebRtcConnWrapper;
   let stopStream: () => unknown;
@@ -570,13 +924,14 @@ export async function playStream(
     (async () => {
       const logger = new Log("playStream:preview");
       logger.debug("Initializing decoder for stream preview");
-      const decoder = await createDecoder(video.avStream);
-      if (!decoder) {
+      const decoder = await createDecoder(video.avStream).catch((e) => {
         logger.warn(
           "Failed to initialize decoder. Stream preview will be disabled",
         );
-        return;
-      }
+        logger.debug({ error: e });
+        return undefined;
+      });
+      if (!decoder) return;
       cleanupFuncs.push(() => {
         logger.debug("Freeing decoder");
         decoder.free();
