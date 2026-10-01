@@ -173,6 +173,14 @@ export class BaseMediaStream extends Writable {
       this.resetTimingCompensation();
       callback(null);
     } else if (this.sync && this.isAhead) {
+      /*
+       * Wait for the other stream to catch up, but at most for the amount we
+       * are ahead of it: when flowing, it advances in real time, so it needs
+       * at most `delta`ms. If it hasn't caught up by then it is starved (e.g.
+       * the demuxer is blocked by backpressure on our own queue), and waiting
+       * forever would deadlock the pipeline.
+       */
+      const deadline = performance.now() + (this.ptsDelta ?? 0);
       do {
         this._loggerSync.debug(
           {
@@ -185,6 +193,7 @@ export class BaseMediaStream extends Writable {
           `Stream is ahead. Waiting for ${frametime}ms`,
         );
         await setTimeout(frametime);
+        if (performance.now() >= deadline) break;
       } while (this.sync && this.isAhead);
       this.resetTimingCompensation();
       callback(null);
