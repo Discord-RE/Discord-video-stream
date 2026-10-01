@@ -117,70 +117,34 @@ type DemuxerOptions = {
 
 /**
  * Build the bitstream filter chain that turns video packets into the annexb
- * format expected by Discord's RTP packetizer.
- *
- * When `mp4ToAnnexb` is set, packets are expected to be in the mp4 (avcC/hvcC)
- * format and are converted to annexb first. Encoders created without a global
- * header flag already emit annexb, so only AUD removal is needed for them.
+ * format expected by Discord's RTP packetizer. The mp4 -> annexb filters
+ * detect already-annexb input on their own and pass it through untouched.
  */
 export function createVideoBitStreamFilters(
   vStream: Stream,
-  { mp4ToAnnexb = true }: { mp4ToAnnexb?: boolean } = {},
 ): BitStreamFilterAPI[] {
   switch (vStream.codecpar.codecId) {
     case AVCodecID.AV_CODEC_ID_H264: {
-      if (!mp4ToAnnexb) {
-        return [
-          BitStreamFilterAPI.create("filter_units", vStream, {
-            options: {
-              remove_types: String(H264NalUnitTypes.AccessUnitDelimiter),
-            },
-          }),
-        ];
-      }
-      const mp4ToAnnexbFilter = BitStreamFilterAPI.create(
-        "h264_mp4toannexb",
-        vStream,
-      );
+      const mp4ToAnnexb = BitStreamFilterAPI.create("h264_mp4toannexb", vStream);
       // filter_units only inspects NAL headers (no CBS RBSP parsing),
       // so AUD removal stays tolerant of malformed filler.
-      const removeAud = BitStreamFilterAPI.create(
-        "filter_units",
-        mp4ToAnnexbFilter,
-        {
-          options: {
-            remove_types: String(H264NalUnitTypes.AccessUnitDelimiter),
-          },
+      const removeAud = BitStreamFilterAPI.create("filter_units", mp4ToAnnexb, {
+        options: {
+          remove_types: String(H264NalUnitTypes.AccessUnitDelimiter),
         },
-      );
+      });
       const dumpExtra = BitStreamFilterAPI.create("dump_extra", removeAud);
-      return [mp4ToAnnexbFilter, removeAud, dumpExtra];
+      return [mp4ToAnnexb, removeAud, dumpExtra];
     }
     case AVCodecID.AV_CODEC_ID_HEVC: {
-      if (!mp4ToAnnexb) {
-        return [
-          BitStreamFilterAPI.create("filter_units", vStream, {
-            options: {
-              remove_types: String(H265NalUnitTypes.AUD_NUT),
-            },
-          }),
-        ];
-      }
-      const mp4ToAnnexbFilter = BitStreamFilterAPI.create(
-        "hevc_mp4toannexb",
-        vStream,
-      );
-      const removeAud = BitStreamFilterAPI.create(
-        "filter_units",
-        mp4ToAnnexbFilter,
-        {
-          options: {
-            remove_types: String(H265NalUnitTypes.AUD_NUT),
-          },
+      const mp4ToAnnexb = BitStreamFilterAPI.create("hevc_mp4toannexb", vStream);
+      const removeAud = BitStreamFilterAPI.create("filter_units", mp4ToAnnexb, {
+        options: {
+          remove_types: String(H265NalUnitTypes.AUD_NUT),
         },
-      );
+      });
       const dumpExtra = BitStreamFilterAPI.create("dump_extra", removeAud);
-      return [mp4ToAnnexbFilter, removeAud, dumpExtra];
+      return [mp4ToAnnexb, removeAud, dumpExtra];
     }
     default:
       return [BitStreamFilterAPI.create("null", vStream)];
