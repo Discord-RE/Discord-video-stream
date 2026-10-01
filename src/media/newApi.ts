@@ -250,9 +250,12 @@ function computeScaledDims(
  * Read the first bytes of the stream, mirroring ffmpeg's incremental probing,
  * to detect the container format. `Demuxer.open` requires an explicit format
  * for Readable inputs, so the consumed bytes are replayed into the demuxer
- * through a wrapper stream.
+ * through a wrapper stream. The detected format is returned alongside the
+ * buffer so it doesn't have to be probed again.
  */
-async function readProbeBuffer(stream: Readable): Promise<Buffer | null> {
+async function probeFormat(
+  stream: Readable,
+): Promise<{ buffer: Buffer; format: InputFormat } | null> {
   const chunks: Buffer[] = [];
   let size = 0;
   // destroyOnReturn: false, so the stream survives when the probe succeeds
@@ -260,9 +263,12 @@ async function readProbeBuffer(stream: Readable): Promise<Buffer | null> {
   for await (const chunk of stream.iterator({ destroyOnReturn: false })) {
     chunks.push(chunk);
     size += chunk.length;
-    if (size >= 2 ** 20 || InputFormat.probe(Buffer.concat(chunks))) break;
+    if (size >= 2 ** 20) break;
+    const buffer = Buffer.concat(chunks);
+    const format = InputFormat.probe(buffer);
+    if (format) return { buffer, format };
   }
-  return chunks.length ? Buffer.concat(chunks) : null;
+  return null;
 }
 
 /**
@@ -437,24 +443,23 @@ export async function prepareStream(
         signal: cancelSignal,
       });
     } else {
-      const probedBuffer = await readProbeBuffer(input);
-      if (!probedBuffer) {
+      const probed = await probeFormat(input);
+      if (!probed) {
         input.destroy();
         throw new Error("Input stream ended before its format could be probed");
       }
-      const probedFormat = InputFormat.probe(probedBuffer)?.name;
-      if (!probedFormat) {
+      if (!probed.format?.name) {
         input.destroy();
         throw new Error("Could not detect the input format");
       }
       probeWrapper = new PassThrough();
-      probeWrapper.write(probedBuffer);
+      probeWrapper.write(probed.buffer);
       input.pipe(probeWrapper);
       demuxer = await Demuxer.open(probeWrapper, {
         options: inputOptions,
         bufferSize: 8192,
         signal: cancelSignal,
-        format: probedFormat,
+        format: probed.format.name,
       });
     }
   } catch (e) {
