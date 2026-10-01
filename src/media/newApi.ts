@@ -568,7 +568,8 @@ export async function prepareStream(
     // Deduce the hardware context from the encoder name (e.g. "h264_vaapi" ->
     // VAAPI), so any hardware encoder works without per-encoder special cases
     const hw = hardwareForEncoder(encoderSettings.name);
-    const encodeHardware = hw && HardwareContext.create(hw.deviceType, encoderSettings.device);
+    const encodeHardware =
+      hw && HardwareContext.create(hw.deviceType, encoderSettings.device);
     if (hw && !encodeHardware) {
       closePipeline();
       throw new Error(
@@ -580,8 +581,8 @@ export async function prepareStream(
     // and the encoder has a hardware scaler, else decode and scale on the CPU.
     // The check must be an actual hardware test: getDecoderCodec only reports
     // the registered hw configs, which say nothing about driver support.
-    const hwChain = hw?.scaleFilter &&
-      encodeHardware?.testDecoder(vStream.codecpar.codecId)
+    const hwChain =
+      hw?.scaleFilter && encodeHardware?.testDecoder(vStream.codecpar.codecId)
         ? { hardware: encodeHardware, scaleFilter: hw.scaleFilter }
         : null;
 

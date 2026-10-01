@@ -125,7 +125,10 @@ export function createVideoBitStreamFilters(
 ): BitStreamFilterAPI[] {
   switch (vStream.codecpar.codecId) {
     case AVCodecID.AV_CODEC_ID_H264: {
-      const mp4ToAnnexb = BitStreamFilterAPI.create("h264_mp4toannexb", vStream);
+      const mp4ToAnnexb = BitStreamFilterAPI.create(
+        "h264_mp4toannexb",
+        vStream,
+      );
       // filter_units only inspects NAL headers (no CBS RBSP parsing),
       // so AUD removal stays tolerant of malformed filler.
       const removeAud = BitStreamFilterAPI.create("filter_units", mp4ToAnnexb, {
@@ -137,7 +140,10 @@ export function createVideoBitStreamFilters(
       return [mp4ToAnnexb, removeAud, dumpExtra];
     }
     case AVCodecID.AV_CODEC_ID_HEVC: {
-      const mp4ToAnnexb = BitStreamFilterAPI.create("hevc_mp4toannexb", vStream);
+      const mp4ToAnnexb = BitStreamFilterAPI.create(
+        "hevc_mp4toannexb",
+        vStream,
+      );
       const removeAud = BitStreamFilterAPI.create("filter_units", mp4ToAnnexb, {
         options: {
           remove_types: String(H265NalUnitTypes.AUD_NUT),
