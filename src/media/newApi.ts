@@ -568,11 +568,8 @@ export async function prepareStream(
     // Deduce the hardware context from the encoder name (e.g. "h264_vaapi" ->
     // VAAPI), so any hardware encoder works without per-encoder special cases
     const hw = hardwareForEncoder(encoderSettings.name);
-    const encodeHardware =
-      hw === null
-        ? null
-        : HardwareContext.create(hw.deviceType, encoderSettings.device);
-    if (hw !== null && !encodeHardware) {
+    const encodeHardware = hw && HardwareContext.create(hw.deviceType, encoderSettings.device);
+    if (hw && !encodeHardware) {
       closePipeline();
       throw new Error(
         `Failed to create hardware device context for ${encoderSettings.name}`,
@@ -583,13 +580,12 @@ export async function prepareStream(
     // and the encoder has a hardware scaler, else decode and scale on the CPU.
     // The check must be an actual hardware test: getDecoderCodec only reports
     // the registered hw configs, which say nothing about driver support.
-    const hwChain =
-      hw !== null &&
-      hw.scaleFilter !== undefined &&
+    const hwChain = hw?.scaleFilter &&
       encodeHardware?.testDecoder(vStream.codecpar.codecId)
         ? { hardware: encodeHardware, scaleFilter: hw.scaleFilter }
         : null;
 
+    const outFilters = encoderSettings.outFilters;
     videoFilter = FilterAPI.create(
       hwChain
         ? [
@@ -601,8 +597,10 @@ export async function prepareStream(
         : [
             `scale=${width}:${height}`,
             ...(frameRate ? [`fps=${frameRate}`] : []),
-            "format=yuv420p",
-            ...(encoderSettings.outFilters ?? []),
+            // the outFilters handle the pixel format when present (e.g. the
+            // vaapi upload filterchain), so the default 4:2:0 conversion is
+            // only needed without them
+            ...(outFilters?.length ? outFilters : ["format=yuv420p"]),
           ].join(","),
       // the encode context always goes to the filterchain: the upload filters
       // (hwupload) need it for their hardware frames context
