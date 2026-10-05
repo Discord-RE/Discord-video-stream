@@ -28,6 +28,7 @@ import {
   FF_ENCODER_LIBOPUS,
   FFmpegError,
   FilterAPI,
+  type Frame,
   HardwareContext,
   InputFormat,
   type Packet,
@@ -766,6 +767,58 @@ export async function prepareStream(
   };
   const videoPtsOffsetter = createPtsOffsetter();
   const audioPtsOffsetter = createPtsOffsetter();
+  type PtsOffsetter = ReturnType<typeof createPtsOffsetter>;
+
+  async function* encodeFrames(
+    frames: Frame[],
+    encoder: Encoder,
+    offsetter: PtsOffsetter,
+  ): AsyncGenerator<Packet> {
+    for (const frame of frames) {
+      const packets = await encoder.encodeAll(frame);
+      frame.free();
+      for (const p of packets) yield offsetter.apply(p);
+    }
+  }
+
+  async function* filterEncode(
+    frames: Frame[],
+    filter: FilterAPI,
+    encoder: Encoder,
+    offsetter: PtsOffsetter,
+  ): AsyncGenerator<Packet> {
+    for (const frame of frames) {
+      const filtered = await filter.processAll(frame);
+      frame.free();
+      yield* encodeFrames(filtered, encoder, offsetter);
+    }
+  }
+
+  async function* transcodeTrack(
+    source: AsyncGenerator<Packet | null>,
+    decoder: Decoder,
+    filter: FilterAPI,
+    encoder: Encoder,
+    offsetter: PtsOffsetter,
+    onPacket?: (packet: Packet) => void,
+  ): AsyncGenerator<Packet> {
+    for await (const packet of source) {
+      if (!packet || cancelSignal?.aborted) break;
+      onPacket?.(packet);
+      const frames = await decoder.decodeAll(packet);
+      packet.free();
+      yield* filterEncode(frames, filter, encoder, offsetter);
+    }
+    // flush the tail of the transcode chain at EOF
+    yield* filterEncode(
+      await decoder.decodeAll(null),
+      filter,
+      encoder,
+      offsetter,
+    );
+    yield* encodeFrames(await filter.processAll(null), encoder, offsetter);
+    for (const p of await encoder.encodeAll(null)) yield offsetter.apply(p);
+  }
 
   async function* videoGenerator(): AsyncGenerator<Packet> {
     if (noTranscoding) {
@@ -783,74 +836,25 @@ export async function prepareStream(
       }
       return;
     }
-    for await (const packet of demuxer.packets(vStream!.index)) {
-      if (!packet || cancelSignal?.aborted) return;
-      trackPosition(packet);
-      const frames = await videoDecoder!.decodeAll(packet);
-      packet.free();
-      for (const frame of frames) {
-        const filtered = await videoFilter!.processAll(frame);
-        frame.free();
-        for (const f of filtered) {
-          const packets = await videoEncoder!.encodeAll(f);
-          f.free();
-          for (const p of packets) yield videoPtsOffsetter.apply(p);
-        }
-      }
-    }
-    // flush the tail of the transcode chain at EOF
-    for (const frame of await videoDecoder!.decodeAll(null)) {
-      const filtered = await videoFilter!.processAll(frame);
-      frame.free();
-      for (const f of filtered) {
-        const packets = await videoEncoder!.encodeAll(f);
-        f.free();
-        for (const p of packets) yield videoPtsOffsetter.apply(p);
-      }
-    }
-    for (const frame of await videoFilter!.processAll(null)) {
-      const packets = await videoEncoder!.encodeAll(frame);
-      frame.free();
-      for (const p of packets) yield videoPtsOffsetter.apply(p);
-    }
-    for (const p of await videoEncoder!.encodeAll(null)) {
-      yield videoPtsOffsetter.apply(p);
-    }
+    yield* transcodeTrack(
+      demuxer.packets(vStream!.index),
+      videoDecoder!,
+      videoFilter!,
+      videoEncoder!,
+      videoPtsOffsetter,
+      trackPosition,
+    );
   }
 
   async function* audioGenerator(): AsyncGenerator<Packet> {
     if (!includeAudio || !aStream) return;
-    for await (const packet of demuxer.packets(aStream!.index)) {
-      if (!packet || cancelSignal?.aborted) return;
-      const frames = await audioDecoder!.decodeAll(packet);
-      packet.free();
-      for (const frame of frames) {
-        const filtered = await audioFilter!.processAll(frame);
-        frame.free();
-        for (const f of filtered) {
-          const packets = await audioEncoder!.encodeAll(f);
-          f.free();
-          for (const p of packets) yield audioPtsOffsetter.apply(p);
-        }
-      }
-    }
-    for (const frame of await audioDecoder!.decodeAll(null)) {
-      const filtered = await audioFilter!.processAll(frame);
-      frame.free();
-      for (const f of filtered) {
-        const packets = await audioEncoder!.encodeAll(f);
-        f.free();
-        for (const p of packets) yield audioPtsOffsetter.apply(p);
-      }
-    }
-    for (const frame of await audioFilter!.processAll(null)) {
-      const packets = await audioEncoder!.encodeAll(frame);
-      frame.free();
-      for (const p of packets) yield audioPtsOffsetter.apply(p);
-    }
-    for (const p of await audioEncoder!.encodeAll(null)) {
-      yield audioPtsOffsetter.apply(p);
-    }
+    yield* transcodeTrack(
+      demuxer.packets(aStream!.index),
+      audioDecoder!,
+      audioFilter!,
+      audioEncoder!,
+      audioPtsOffsetter,
+    );
   }
 
   const videoOut = Readable.from(videoGenerator(), { objectMode: true });
