@@ -13,6 +13,7 @@ import {
   AV_LOG_TRACE,
   AV_LOG_VERBOSE,
   AV_LOG_WARNING,
+  AV_NOPTS_VALUE,
   AV_PKT_FLAG_KEY,
   Log as AVLog,
   type AVLogLevel,
@@ -25,12 +26,11 @@ import {
   Encoder,
   type EncoderOptions,
   FF_ENCODER_LIBOPUS,
+  FFmpegError,
   FilterAPI,
-  type Frame,
   HardwareContext,
   InputFormat,
   type Packet,
-  pipeline,
   Rational,
 } from "node-av";
 import pDebounce from "p-debounce";
@@ -102,6 +102,16 @@ export type PrepareStreamOptions = {
   bitrateAudio: number;
 
   /**
+   * Initial audio volume multiplier (1.0 = original volume)
+   */
+  volume: number;
+
+  /**
+   * Start playback at this position, in seconds
+   */
+  startPosition: number;
+
+  /**
    * Enable audio output
    */
   includeAudio: boolean;
@@ -159,6 +169,20 @@ export type PrepareStreamOptions = {
 export type Controller = {
   volume: number;
   setVolume(newVolume: number): Promise<boolean>;
+  /**
+   * Seek the stream to the given position in seconds.
+   * The transport timestamps are kept continuous so audio/video stays in
+   * sync and playback pacing is unaffected.
+   */
+  seek(positionSeconds: number): Promise<boolean>;
+  /**
+   * Current playback position in seconds
+   */
+  readonly position: number | undefined;
+  /**
+   * Total duration in seconds, if known
+   */
+  readonly duration: number | undefined;
 };
 
 export type PreparedStream = {
@@ -271,21 +295,6 @@ async function probeFormat(
   return null;
 }
 
-/**
- * Strip the null flush markers a pipeline generator yields at the end of the
- * stream, so the generator can be consumed by `Readable.from`, which rejects
- * null values instead of treating them as the end of the stream
- * (see https://github.com/nodejs/node/issues/32845).
- */
-function withoutFlushMarkers(source: AsyncGenerator<Packet | Frame | null>) {
-  return (async function* () {
-    for await (const packet of source) {
-      if (packet === null) return;
-      yield packet;
-    }
-  })();
-}
-
 export async function prepareStream(
   input: string | Readable,
   options: Partial<PrepareStreamOptions> = {},
@@ -304,6 +313,8 @@ export async function prepareStream(
     bitrateVideo: 5000,
     bitrateVideoMax: 7000,
     bitrateAudio: 128,
+    volume: 1,
+    startPosition: 0,
     includeAudio: true,
     encoder: Encoders.software(),
     minimizeLatency: false,
@@ -351,6 +362,20 @@ export async function prepareStream(
           ? Math.round(opts.bitrateAudio)
           : defaultOptions.bitrateAudio,
 
+      volume:
+        opts.volume !== undefined &&
+        Number.isFinite(opts.volume) &&
+        opts.volume >= 0
+          ? opts.volume
+          : defaultOptions.volume,
+
+      startPosition:
+        opts.startPosition !== undefined &&
+        Number.isFinite(opts.startPosition) &&
+        opts.startPosition >= 0
+          ? opts.startPosition
+          : defaultOptions.startPosition,
+
       encoder: opts.encoder ?? defaultOptions.encoder,
 
       includeAudio: opts.includeAudio ?? defaultOptions.includeAudio,
@@ -384,6 +409,8 @@ export async function prepareStream(
     encoder: encoderGetter,
     includeAudio,
     bitrateAudio,
+    volume,
+    startPosition,
     minimizeLatency,
     customHeaders,
     customInputOptions,
@@ -441,6 +468,10 @@ export async function prepareStream(
         options: inputOptions,
         bufferSize: 8192,
         signal: cancelSignal,
+        // Keep the container's absolute timestamps (disables the
+        // demuxer's discontinuity remapping, which would hide seek
+        // targets from the position tracking / pacing logic)
+        copyTs: true,
       });
     } else {
       const probed = await probeFormat(input);
@@ -456,6 +487,7 @@ export async function prepareStream(
         bufferSize: 8192,
         signal: cancelSignal,
         format: probed.format.name,
+        copyTs: true,
       });
     }
   } catch (e) {
@@ -494,6 +526,18 @@ export async function prepareStream(
   if (!vStream) {
     closePipeline();
     throw new Error("No video stream in media");
+  }
+
+  if (startPosition > 0) {
+    try {
+      const ret = await demuxer.seek(startPosition);
+      FFmpegError.throwIfError(ret, "seek failed");
+    } catch (e) {
+      closePipeline();
+      throw new Error("Failed to seek to the given start position", {
+        cause: e,
+      });
+    }
   }
 
   if (noTranscoding && !allowedVideoCodec.has(vStream.codecpar.codecId)) {
@@ -665,7 +709,7 @@ export async function prepareStream(
       },
       signal: cancelSignal,
     });
-    audioFilter = FilterAPI.create("volume@internal_lib=1.0", {
+    audioFilter = FilterAPI.create(`volume@internal_lib=${volume}`, {
       signal: cancelSignal,
     });
     audioEncoder = await Encoder.create(FF_ENCODER_LIBOPUS, {
@@ -677,37 +721,142 @@ export async function prepareStream(
     });
   }
 
-  // the pipeline generators signal EOF by yielding null, which Readable.from
-  // rejects instead of treating as the end of the stream
-  // (see https://github.com/nodejs/node/issues/32845), so the flush markers
-  // are filtered out before they reach it
-  const videoOut = Readable.from(
-    withoutFlushMarkers(
-      pipeline(
-        { video: demuxer },
-        {
-          video: noTranscoding
-            ? [vbsf]
-            : [videoDecoder, videoFilter, videoEncoder],
-        },
-        { signal: cancelSignal },
-      ).video,
-    ),
-    { objectMode: true },
-  );
+  const totalDuration =
+    demuxer.duration > 0 && Number.isFinite(demuxer.duration)
+      ? demuxer.duration
+      : undefined;
 
+  // Current playback position in seconds, tracked from the demuxer's
+  // video packets. With copyTs, packet timestamps are the container's
+  // absolute timestamps, so this directly reflects the position.
+  let currentPosition: number | undefined;
+  const trackPosition = (packet: Packet) => {
+    if (packet.pts === AV_NOPTS_VALUE) return;
+    const { num, den } = packet.timeBase;
+    if (den === 0) return;
+    currentPosition = (Number(packet.pts) * num) / den;
+  };
+
+  // After a seek, packet timestamps jump; offsetting them keeps the
+  // output stream's timestamps continuous so downstream playback
+  // pacing and A/V sync (which rely on monotonic pts) keep working.
+  const createPtsOffsetter = () => {
+    let lastPts: bigint | undefined;
+    let offset: bigint | undefined;
+    let armed = false;
+    return {
+      deferToContinuous: () => {
+        armed = true;
+      },
+      apply: (packet: Packet) => {
+        if (armed && lastPts !== undefined) {
+          if (packet.pts !== AV_NOPTS_VALUE) {
+            offset = lastPts - packet.pts;
+            armed = false;
+          }
+        }
+        if (offset !== undefined) {
+          if (packet.pts !== AV_NOPTS_VALUE) packet.pts += offset;
+          if (packet.dts !== AV_NOPTS_VALUE) packet.dts += offset;
+        }
+        if (packet.pts !== AV_NOPTS_VALUE) lastPts = packet.pts;
+        return packet;
+      },
+    };
+  };
+  const videoPtsOffsetter = createPtsOffsetter();
+  const audioPtsOffsetter = createPtsOffsetter();
+
+  async function* videoGenerator(): AsyncGenerator<Packet> {
+    if (noTranscoding) {
+      for await (const packet of demuxer.packets(vStream!.index)) {
+        if (!packet || cancelSignal?.aborted) return;
+        trackPosition(packet);
+        let packets = [packet];
+        for (const f of vbsf) {
+          const next: Packet[] = [];
+          for (const p of packets) next.push(...(await f.filterAll(p)));
+          packets = next;
+        }
+        packet.free();
+        for (const p of packets) yield videoPtsOffsetter.apply(p);
+      }
+      return;
+    }
+    for await (const packet of demuxer.packets(vStream!.index)) {
+      if (!packet || cancelSignal?.aborted) return;
+      trackPosition(packet);
+      const frames = await videoDecoder!.decodeAll(packet);
+      packet.free();
+      for (const frame of frames) {
+        const filtered = await videoFilter!.processAll(frame);
+        frame.free();
+        for (const f of filtered) {
+          const packets = await videoEncoder!.encodeAll(f);
+          f.free();
+          for (const p of packets) yield videoPtsOffsetter.apply(p);
+        }
+      }
+    }
+    // flush the tail of the transcode chain at EOF
+    for (const frame of await videoDecoder!.decodeAll(null)) {
+      const filtered = await videoFilter!.processAll(frame);
+      frame.free();
+      for (const f of filtered) {
+        const packets = await videoEncoder!.encodeAll(f);
+        f.free();
+        for (const p of packets) yield videoPtsOffsetter.apply(p);
+      }
+    }
+    for (const frame of await videoFilter!.processAll(null)) {
+      const packets = await videoEncoder!.encodeAll(frame);
+      frame.free();
+      for (const p of packets) yield videoPtsOffsetter.apply(p);
+    }
+    for (const p of await videoEncoder!.encodeAll(null)) {
+      yield videoPtsOffsetter.apply(p);
+    }
+  }
+
+  async function* audioGenerator(): AsyncGenerator<Packet> {
+    if (!includeAudio || !aStream) return;
+    for await (const packet of demuxer.packets(aStream!.index)) {
+      if (!packet || cancelSignal?.aborted) return;
+      const frames = await audioDecoder!.decodeAll(packet);
+      packet.free();
+      for (const frame of frames) {
+        const filtered = await audioFilter!.processAll(frame);
+        frame.free();
+        for (const f of filtered) {
+          const packets = await audioEncoder!.encodeAll(f);
+          f.free();
+          for (const p of packets) yield audioPtsOffsetter.apply(p);
+        }
+      }
+    }
+    for (const frame of await audioDecoder!.decodeAll(null)) {
+      const filtered = await audioFilter!.processAll(frame);
+      frame.free();
+      for (const f of filtered) {
+        const packets = await audioEncoder!.encodeAll(f);
+        f.free();
+        for (const p of packets) yield audioPtsOffsetter.apply(p);
+      }
+    }
+    for (const frame of await audioFilter!.processAll(null)) {
+      const packets = await audioEncoder!.encodeAll(frame);
+      frame.free();
+      for (const p of packets) yield audioPtsOffsetter.apply(p);
+    }
+    for (const p of await audioEncoder!.encodeAll(null)) {
+      yield audioPtsOffsetter.apply(p);
+    }
+  }
+
+  const videoOut = Readable.from(videoGenerator(), { objectMode: true });
   const audioOut =
     includeAudio && aStream
-      ? Readable.from(
-          withoutFlushMarkers(
-            pipeline(
-              { audio: demuxer },
-              { audio: [audioDecoder, audioFilter, audioEncoder] },
-              { signal: cancelSignal },
-            ).audio,
-          ),
-          { objectMode: true },
-        )
+      ? Readable.from(audioGenerator(), { objectMode: true })
       : undefined;
 
   const outputs = [videoOut, ...(audioOut ? [audioOut] : [])];
@@ -728,7 +877,7 @@ export async function prepareStream(
     () => closePipeline(),
   );
 
-  let currentVolume = 1;
+  let currentVolume = volume;
 
   return {
     output: {
@@ -754,6 +903,27 @@ export async function prepareStream(
         } catch {
           return false;
         }
+      },
+      async seek(positionSeconds: number) {
+        if (!Number.isFinite(positionSeconds) || positionSeconds < 0) {
+          return false;
+        }
+        try {
+          const ret = await demuxer.seek(positionSeconds);
+          FFmpegError.throwIfError(ret, "seek failed");
+        } catch {
+          return false;
+        }
+        videoPtsOffsetter.deferToContinuous();
+        audioPtsOffsetter.deferToContinuous();
+        currentPosition = positionSeconds;
+        return true;
+      },
+      get position() {
+        return currentPosition;
+      },
+      get duration() {
+        return totalDuration;
       },
     } satisfies Controller,
   };
