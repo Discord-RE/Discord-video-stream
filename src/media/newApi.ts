@@ -499,29 +499,22 @@ export async function prepareStream(
   const vStream = demuxer.video();
   const aStream = demuxer.audio();
 
-  // video transcode pipeline (decoder -> filters -> encoder)
-  let videoDecoder: Decoder | undefined;
-  let videoFilter: FilterAPI | undefined;
-  let videoEncoder: Encoder | undefined;
-
-  // audio pipeline (decoder -> volume filter -> encoder)
-  let audioDecoder: Decoder | undefined;
-  let audioFilter: FilterAPI | undefined;
-  let audioEncoder: Encoder | undefined;
-
   let vbsf: BitStreamFilterAPI[] = [];
+
+  let videoChain: TrackChain | undefined;
+  let audioChain: TrackChain | undefined;
 
   const closePipeline = () => {
     demuxer.close();
     probeWrapper?.destroy();
     if (typeof input !== "string") input.destroy();
     for (const filter of vbsf) filter.close();
-    videoFilter?.close();
-    videoDecoder?.close();
-    videoEncoder?.close();
-    audioFilter?.close();
-    audioDecoder?.close();
-    audioEncoder?.close();
+    for (const chain of [videoChain, audioChain]) {
+      if (!chain) continue;
+      chain.decoder.close();
+      chain.filter.close();
+      chain.encoder.close();
+    }
   };
 
   if (!vStream) {
@@ -602,142 +595,6 @@ export async function prepareStream(
     logger.info({ info: aInfo }, "Prepared audio stream");
   }
 
-  if (!noTranscoding) {
-    const encoderSettings = encoderGetter(bitrateVideo, bitrateVideoMax)[
-      videoCodec
-    ];
-    if (!encoderSettings) {
-      closePipeline();
-      throw new Error(`Encoder settings not specified for ${videoCodec}`);
-    }
-
-    // Deduce the hardware context from the encoder name (e.g. "h264_vaapi" ->
-    // VAAPI), so any hardware encoder works without per-encoder special cases
-    const hw = hardwareForEncoder(encoderSettings.name);
-    const encodeHardware =
-      hw && HardwareContext.create(hw.deviceType, encoderSettings.device);
-    if (hw && !encodeHardware) {
-      closePipeline();
-      throw new Error(
-        `Failed to create hardware device context for ${encoderSettings.name}`,
-      );
-    }
-
-    // HW decode + HW scale when the encoder's context can decode the input
-    // and the encoder has a hardware scaler, else decode and scale on the CPU.
-    // The check must be an actual hardware test: getDecoderCodec only reports
-    // the registered hw configs, which say nothing about driver support.
-    const hwChain =
-      hw?.scaleFilter && encodeHardware?.testDecoder(vStream.codecpar.codecId)
-        ? { hardware: encodeHardware, scaleFilter: hw.scaleFilter }
-        : null;
-
-    const outFilters = encoderSettings.outFilters;
-    videoFilter = FilterAPI.create(
-      hwChain
-        ? [
-            // the upload passes hardware frames through untouched
-            "hwupload",
-            `${hwChain.scaleFilter}=w=${outWidth}:h=${outHeight}:format=nv12`,
-            ...(frameRate ? [`fps=${frameRate}`] : []),
-          ].join(",")
-        : [
-            `scale=${width}:${height}`,
-            ...(frameRate ? [`fps=${frameRate}`] : []),
-            // the outFilters handle the pixel format when present (e.g. the
-            // vaapi upload filterchain), so the default 4:2:0 conversion is
-            // only needed without them
-            ...(outFilters?.length ? outFilters : ["format=yuv420p"]),
-          ].join(","),
-      // the encode context always goes to the filterchain: the upload filters
-      // (hwupload) need it for their hardware frames context
-      { hardware: encodeHardware, signal: cancelSignal },
-    );
-
-    const decoderOptions: DecoderOptions = {
-      hardware: hwChain?.hardware ?? null,
-      exitOnError: false,
-      signal: cancelSignal,
-    };
-    if (minimizeLatency) {
-      decoderOptions.configure = (ctx: CodecContext) => {
-        ctx.setFlags(AV_CODEC_FLAG_LOW_DELAY);
-      };
-    }
-    videoDecoder = await Decoder.create(vStream, decoderOptions);
-
-    // pass the target framerate explicitly: the framerate the encoder derives
-    // itself (from the filter/decoder stream) may be wrong or missing, which
-    // breaks the encoder's average bitrate calculations
-    const targetFramerate = frameRate
-      ? new Rational(frameRate, 1)
-      : sourceFramerate;
-    const targetFps =
-      targetFramerate.den > 0 ? targetFramerate.num / targetFramerate.den : 0;
-    const encoderOptions: EncoderOptions = {
-      filter: videoFilter,
-      decoder: videoDecoder,
-      autoFormat: true,
-      context: {
-        ...(targetFramerate.num > 0 && targetFramerate.den > 0
-          ? { framerate: targetFramerate }
-          : {}),
-        bitRate: `${bitrateVideo}k`,
-        rcMaxRate: `${bitrateVideoMax}k`,
-        rcBufferSize: `${Math.round(bitrateVideo / 2)}k`,
-        // keyframes every ~1s, like ffmpeg's `-force_key_frames expr:gte(t,n_forced*1)`
-        gopSize: Math.max(1, Math.round(targetFps > 0 ? targetFps : 30)),
-        // B-frames are not supported by Discord's packetizer
-        maxBFrames: 0,
-      },
-      options: encoderSettings.options,
-      signal: cancelSignal,
-    };
-    videoEncoder = await Encoder.create(encoderSettings.name, encoderOptions);
-  }
-
-  if (includeAudio && aStream) {
-    audioDecoder = await Decoder.create(aStream, {
-      exitOnError: false,
-      // Discord expects 48kHz stereo opus
-      resample: {
-        sampleRate: 48000,
-        channelLayout: {
-          nbChannels: 2,
-          order: AV_CHANNEL_ORDER_NATIVE,
-          mask: 3n,
-        },
-      },
-      signal: cancelSignal,
-    });
-    audioFilter = FilterAPI.create(`volume@internal_lib=${volume}`, {
-      signal: cancelSignal,
-    });
-    audioEncoder = await Encoder.create(FF_ENCODER_LIBOPUS, {
-      autoResample: true,
-      decoder: audioDecoder,
-      filter: audioFilter,
-      context: { bitRate: `${bitrateAudio}k` },
-      signal: cancelSignal,
-    });
-  }
-
-  const totalDuration =
-    demuxer.duration > 0 && Number.isFinite(demuxer.duration)
-      ? demuxer.duration
-      : undefined;
-
-  // Current playback position in seconds, tracked from the demuxer's
-  // video packets. With copyTs, packet timestamps are the container's
-  // absolute timestamps, so this directly reflects the position.
-  let currentPosition: number | undefined;
-  const trackPosition = (packet: Packet) => {
-    if (packet.pts === AV_NOPTS_VALUE) return;
-    const { num, den } = packet.timeBase;
-    if (den === 0) return;
-    currentPosition = (Number(packet.pts) * num) / den;
-  };
-
   // After a seek, packet timestamps jump; offsetting them keeps the
   // output stream's timestamps continuous so downstream playback
   // pacing and A/V sync (which rely on monotonic pts) keep working.
@@ -769,6 +626,174 @@ export async function prepareStream(
   const audioPtsOffsetter = createPtsOffsetter();
   type PtsOffsetter = ReturnType<typeof createPtsOffsetter>;
 
+  type TrackChain = {
+    decoder: Decoder;
+    filter: FilterAPI;
+    encoder: Encoder;
+    offsetter: PtsOffsetter;
+    createFilter: () => FilterAPI;
+  };
+
+  if (!noTranscoding) {
+    const encoderSettings = encoderGetter(bitrateVideo, bitrateVideoMax)[
+      videoCodec
+    ];
+    if (!encoderSettings) {
+      closePipeline();
+      throw new Error(`Encoder settings not specified for ${videoCodec}`);
+    }
+
+    // Deduce the hardware context from the encoder name (e.g. "h264_vaapi" ->
+    // VAAPI), so any hardware encoder works without per-encoder special cases
+    const hw = hardwareForEncoder(encoderSettings.name);
+    const encodeHardware =
+      hw && HardwareContext.create(hw.deviceType, encoderSettings.device);
+    if (hw && !encodeHardware) {
+      closePipeline();
+      throw new Error(
+        `Failed to create hardware device context for ${encoderSettings.name}`,
+      );
+    }
+
+    // HW decode + HW scale when the encoder's context can decode the input
+    // and the encoder has a hardware scaler, else decode and scale on the CPU.
+    // The check must be an actual hardware test: getDecoderCodec only reports
+    // the registered hw configs, which say nothing about driver support.
+    const hwChain =
+      hw?.scaleFilter && encodeHardware?.testDecoder(vStream.codecpar.codecId)
+        ? { hardware: encodeHardware, scaleFilter: hw.scaleFilter }
+        : null;
+
+    const outFilters = encoderSettings.outFilters;
+    const videoFilterSpec = hwChain
+      ? [
+          // the upload passes hardware frames through untouched
+          "hwupload",
+          `${hwChain.scaleFilter}=w=${outWidth}:h=${outHeight}:format=nv12`,
+          ...(frameRate ? [`fps=${frameRate}`] : []),
+        ].join(",")
+      : [
+          `scale=${width}:${height}`,
+          ...(frameRate ? [`fps=${frameRate}`] : []),
+          // the outFilters handle the pixel format when present (e.g. the
+          // vaapi upload filterchain), so the default 4:2:0 conversion is
+          // only needed without them
+          ...(outFilters?.length ? outFilters : ["format=yuv420p"]),
+        ].join(",");
+    // the encode context always goes to the filterchain: the upload filters
+    // (hwupload) need it for their hardware frames context
+    const createVideoFilter = () =>
+      FilterAPI.create(videoFilterSpec, {
+        hardware: encodeHardware,
+        signal: cancelSignal,
+      });
+    const videoFilter = createVideoFilter();
+
+    const decoderOptions: DecoderOptions = {
+      hardware: hwChain?.hardware ?? null,
+      exitOnError: false,
+      signal: cancelSignal,
+    };
+    if (minimizeLatency) {
+      decoderOptions.configure = (ctx: CodecContext) => {
+        ctx.setFlags(AV_CODEC_FLAG_LOW_DELAY);
+      };
+    }
+    const videoDecoder = await Decoder.create(vStream, decoderOptions);
+
+    // pass the target framerate explicitly: the framerate the encoder derives
+    // itself (from the filter/decoder stream) may be wrong or missing, which
+    // breaks the encoder's average bitrate calculations
+    const targetFramerate = frameRate
+      ? new Rational(frameRate, 1)
+      : sourceFramerate;
+    const targetFps =
+      targetFramerate.den > 0 ? targetFramerate.num / targetFramerate.den : 0;
+    const encoderOptions: EncoderOptions = {
+      filter: videoFilter,
+      decoder: videoDecoder,
+      autoFormat: true,
+      context: {
+        ...(targetFramerate.num > 0 && targetFramerate.den > 0
+          ? { framerate: targetFramerate }
+          : {}),
+        bitRate: `${bitrateVideo}k`,
+        rcMaxRate: `${bitrateVideoMax}k`,
+        rcBufferSize: `${Math.round(bitrateVideo / 2)}k`,
+        // keyframes every ~1s, like ffmpeg's `-force_key_frames expr:gte(t,n_forced*1)`
+        gopSize: Math.max(1, Math.round(targetFps > 0 ? targetFps : 30)),
+        // B-frames are not supported by Discord's packetizer
+        maxBFrames: 0,
+      },
+      options: encoderSettings.options,
+      signal: cancelSignal,
+    };
+    const videoEncoder = await Encoder.create(
+      encoderSettings.name,
+      encoderOptions,
+    );
+    videoChain = {
+      decoder: videoDecoder,
+      filter: videoFilter,
+      encoder: videoEncoder,
+      offsetter: videoPtsOffsetter,
+      createFilter: createVideoFilter,
+    };
+  }
+
+  let currentVolume = volume;
+
+  if (includeAudio && aStream) {
+    const audioDecoder = await Decoder.create(aStream, {
+      exitOnError: false,
+      // Discord expects 48kHz stereo opus
+      resample: {
+        sampleRate: 48000,
+        channelLayout: {
+          nbChannels: 2,
+          order: AV_CHANNEL_ORDER_NATIVE,
+          mask: 3n,
+        },
+      },
+      signal: cancelSignal,
+    });
+    const createAudioFilter = () =>
+      FilterAPI.create(`volume@internal_lib=${currentVolume}`, {
+        signal: cancelSignal,
+      });
+    const audioFilter = createAudioFilter();
+    const audioEncoder = await Encoder.create(FF_ENCODER_LIBOPUS, {
+      autoResample: true,
+      decoder: audioDecoder,
+      filter: audioFilter,
+      context: { bitRate: `${bitrateAudio}k` },
+      signal: cancelSignal,
+    });
+    audioChain = {
+      decoder: audioDecoder,
+      filter: audioFilter,
+      encoder: audioEncoder,
+      offsetter: audioPtsOffsetter,
+      createFilter: createAudioFilter,
+    };
+  }
+
+  const totalDuration =
+    demuxer.duration > 0 && Number.isFinite(demuxer.duration)
+      ? demuxer.duration
+      : undefined;
+
+  // Current playback position in seconds, tracked from the demuxer's
+  // video packets. With copyTs, packet timestamps are the container's
+  // absolute timestamps, so this directly reflects the position.
+  let currentPosition: number | undefined;
+  const trackPosition = (packet: Packet) => {
+    if (packet.pts === AV_NOPTS_VALUE) return;
+    const { num, den } = packet.timeBase;
+    if (den === 0) return;
+    currentPosition = (Number(packet.pts) * num) / den;
+  };
+
   async function* encodeFrames(
     frames: Frame[],
     encoder: Encoder,
@@ -796,29 +821,44 @@ export async function prepareStream(
 
   async function* transcodeTrack(
     source: AsyncGenerator<Packet | null>,
-    decoder: Decoder,
-    filter: FilterAPI,
-    encoder: Encoder,
-    offsetter: PtsOffsetter,
+    chain: TrackChain,
     onPacket?: (packet: Packet) => void,
   ): AsyncGenerator<Packet> {
+    const { decoder, encoder, offsetter } = chain;
     for await (const packet of source) {
       if (!packet || cancelSignal?.aborted) break;
       onPacket?.(packet);
       const frames = await decoder.decodeAll(packet);
       packet.free();
-      yield* filterEncode(frames, filter, encoder, offsetter);
+      yield* filterEncode(frames, chain.filter, encoder, offsetter);
     }
     // flush the tail of the transcode chain at EOF
     yield* filterEncode(
       await decoder.decodeAll(null),
-      filter,
+      chain.filter,
       encoder,
       offsetter,
     );
-    yield* encodeFrames(await filter.processAll(null), encoder, offsetter);
+    yield* encodeFrames(
+      await chain.filter.processAll(null),
+      encoder,
+      offsetter,
+    );
     for (const p of await encoder.encodeAll(null)) yield offsetter.apply(p);
   }
+
+  // Drop any frames/packets buffered before a seek and restart the filter
+  // graph (filters keep no user-visible flush API, so they are recreated).
+  // The encoder only reads the filter's metadata after creation, so it can
+  // keep using the stale reference safely.
+  const flushChain = (chain: TrackChain | undefined) => {
+    if (!chain) return;
+    chain.decoder.getCodecContext()?.flushBuffers();
+    chain.encoder.getCodecContext()?.flushBuffers();
+    const oldFilter = chain.filter;
+    chain.filter = chain.createFilter();
+    oldFilter.close();
+  };
 
   async function* videoGenerator(): AsyncGenerator<Packet> {
     if (noTranscoding) {
@@ -838,23 +878,14 @@ export async function prepareStream(
     }
     yield* transcodeTrack(
       demuxer.packets(vStream!.index),
-      videoDecoder!,
-      videoFilter!,
-      videoEncoder!,
-      videoPtsOffsetter,
+      videoChain!,
       trackPosition,
     );
   }
 
   async function* audioGenerator(): AsyncGenerator<Packet> {
     if (!includeAudio || !aStream) return;
-    yield* transcodeTrack(
-      demuxer.packets(aStream!.index),
-      audioDecoder!,
-      audioFilter!,
-      audioEncoder!,
-      audioPtsOffsetter,
-    );
+    yield* transcodeTrack(demuxer.packets(aStream!.index), audioChain!);
   }
 
   const videoOut = Readable.from(videoGenerator(), { objectMode: true });
@@ -881,8 +912,6 @@ export async function prepareStream(
     () => closePipeline(),
   );
 
-  let currentVolume = volume;
-
   return {
     output: {
       video: { ...vInfo, stream: videoOut },
@@ -895,9 +924,9 @@ export async function prepareStream(
       },
       async setVolume(newVolume: number) {
         if (!Number.isFinite(newVolume) || newVolume < 0) return false;
-        if (!audioFilter) return false;
+        if (!audioChain) return false;
         try {
-          audioFilter.sendCommand(
+          audioChain.filter.sendCommand(
             "volume@internal_lib",
             "volume",
             String(newVolume),
@@ -918,6 +947,8 @@ export async function prepareStream(
         } catch {
           return false;
         }
+        flushChain(videoChain);
+        flushChain(audioChain);
         videoPtsOffsetter.deferToContinuous();
         audioPtsOffsetter.deferToContinuous();
         currentPosition = positionSeconds;
