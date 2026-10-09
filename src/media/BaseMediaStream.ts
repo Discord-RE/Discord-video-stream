@@ -3,6 +3,21 @@ import { setTimeout } from "node:timers/promises";
 import { Log } from "debug-level";
 import { AV_NOPTS_VALUE, type Packet } from "node-av";
 
+/*
+ * Pts jumps larger than this are treated as a seek (or a timestamp wrap)
+ * rather than jitter: the pacer re-anchors its timing compensation instead
+ * of sleeping through the gap. Normal per-frame gaps are tens of ms.
+ */
+const SEEK_JUMP_THRESHOLD_MS = 1000;
+
+/*
+ * Upper bound for how long the A/V sync "ahead" wait sleeps while the
+ * other stream catches up. Gaps beyond this (e.g. the other stream hasn't
+ * processed a seek yet) can never be closed by waiting in real time, so
+ * the wait is capped instead of freezing this stream for the whole gap.
+ */
+const MAX_SYNC_WAIT_MS = 3000;
+
 export class BaseMediaStream extends Writable {
   private _pts?: number;
   private _syncTolerance = 20;
@@ -118,9 +133,27 @@ export class BaseMediaStream extends Writable {
     await this._sendFrame(Buffer.from(data), frametime);
     const end_sendFrame = performance.now();
 
+    // A large pts jump means the source was seeked (or the timestamps
+    // wrapped): the old pacing anchor no longer applies, so re-anchor
+    // here instead of sleeping/skipping for the size of the jump.
+    const prevPts = this._pts;
     this._pts = (Number(pts) / timeBase.den) * timeBase.num * 1000;
     this.emit("pts", this._pts);
-
+    if (
+      prevPts !== undefined &&
+      Math.abs(this._pts - prevPts) > SEEK_JUMP_THRESHOLD_MS
+    ) {
+      this._loggerSync.debug(
+        {
+          stats: {
+            pts: this._pts,
+            pts_prev: prevPts,
+          },
+        },
+        "Timestamp discontinuity detected. Re-syncing stream pacing",
+      );
+      this.resetTimingCompensation();
+    }
     const sendTime = end_sendFrame - start_sendFrame;
     const ratio = sendTime / frametime;
     this._loggerSend.debug(
@@ -179,8 +212,14 @@ export class BaseMediaStream extends Writable {
        * at most `delta`ms. If it hasn't caught up by then it is starved (e.g.
        * the demuxer is blocked by backpressure on our own queue), and waiting
        * forever would deadlock the pipeline.
+       *
+       * The wait is additionally capped: a lead of many seconds (e.g. the
+       * other stream hasn't processed a seek yet) can never be closed by
+       * waiting in real time, so freeze at most MAX_SYNC_WAIT_MS per frame
+       * and let the behind side race to catch up instead.
        */
-      const deadline = performance.now() + (this.ptsDelta ?? 0);
+      const deadline =
+        performance.now() + Math.min(this.ptsDelta ?? 0, MAX_SYNC_WAIT_MS);
       do {
         this._loggerSync.debug(
           {

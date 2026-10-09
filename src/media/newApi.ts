@@ -243,6 +243,19 @@ function roundEven(n: number) {
 }
 
 /**
+ * Packet pts in seconds, or undefined when the packet carries no
+ * usable timestamp
+ */
+function packetSecs(packet: Packet): number | undefined {
+  if (packet.pts === AV_NOPTS_VALUE) return undefined;
+  const { num, den } = packet.timeBase;
+  if (!Number.isFinite(num) || !Number.isFinite(den) || den === 0) {
+    return undefined;
+  }
+  return (Number(packet.pts) * num) / den;
+}
+
+/**
  * Compute the output video dimensions like ffmpeg's scale filter does with
  * negative values (negative values = resize by aspect ratio,
  * see https://trac.ffmpeg.org/wiki/Scaling)
@@ -524,7 +537,10 @@ export async function prepareStream(
 
   if (startPosition > 0) {
     try {
-      const ret = await demuxer.seek(startPosition);
+      const target = BigInt(Math.floor(startPosition * 1_000_000));
+      const ret = await demuxer
+        .getFormatContext()
+        .seekFile(-1, target - 1_000_000n, target, target + 1_000_000n);
       FFmpegError.throwIfError(ret, "seek failed");
     } catch (e) {
       closePipeline();
@@ -595,43 +611,16 @@ export async function prepareStream(
     logger.info({ info: aInfo }, "Prepared audio stream");
   }
 
-  // After a seek, packet timestamps jump; offsetting them keeps the
-  // output stream's timestamps continuous so downstream playback
-  // pacing and A/V sync (which rely on monotonic pts) keep working.
-  const createPtsOffsetter = () => {
-    let lastPts: bigint | undefined;
-    let offset: bigint | undefined;
-    let armed = false;
-    return {
-      deferToContinuous: () => {
-        armed = true;
-      },
-      apply: (packet: Packet) => {
-        if (armed && lastPts !== undefined) {
-          if (packet.pts !== AV_NOPTS_VALUE) {
-            offset = lastPts - packet.pts;
-            armed = false;
-          }
-        }
-        if (offset !== undefined) {
-          if (packet.pts !== AV_NOPTS_VALUE) packet.pts += offset;
-          if (packet.dts !== AV_NOPTS_VALUE) packet.dts += offset;
-        }
-        if (packet.pts !== AV_NOPTS_VALUE) lastPts = packet.pts;
-        return packet;
-      },
-    };
-  };
-  const videoPtsOffsetter = createPtsOffsetter();
-  const audioPtsOffsetter = createPtsOffsetter();
-  type PtsOffsetter = ReturnType<typeof createPtsOffsetter>;
-
   type TrackChain = {
     decoder: Decoder;
     filter: FilterAPI;
     encoder: Encoder;
-    offsetter: PtsOffsetter;
     createFilter: () => FilterAPI;
+    // set by controller.seek; the track's generator loop consumes it when
+    // the jump to the post-seek packets is spotted, so the flush (and the
+    // filter recreation, which anchors the new filter graph on post-seek
+    // timestamps) happens exactly at the content boundary
+    seekPending: boolean;
   };
 
   if (!noTranscoding) {
@@ -736,8 +725,8 @@ export async function prepareStream(
       decoder: videoDecoder,
       filter: videoFilter,
       encoder: videoEncoder,
-      offsetter: videoPtsOffsetter,
       createFilter: createVideoFilter,
+      seekPending: false,
     };
   }
 
@@ -773,8 +762,8 @@ export async function prepareStream(
       decoder: audioDecoder,
       filter: audioFilter,
       encoder: audioEncoder,
-      offsetter: audioPtsOffsetter,
       createFilter: createAudioFilter,
+      seekPending: false,
     };
   }
 
@@ -788,21 +777,43 @@ export async function prepareStream(
   // absolute timestamps, so this directly reflects the position.
   let currentPosition: number | undefined;
   const trackPosition = (packet: Packet) => {
-    if (packet.pts === AV_NOPTS_VALUE) return;
-    const { num, den } = packet.timeBase;
-    if (den === 0) return;
-    currentPosition = (Number(packet.pts) * num) / den;
+    const secs = packetSecs(packet);
+    if (secs !== undefined) currentPosition = secs;
   };
+
+  // Encoders don't necessarily preserve the input frame timestamps in
+  // their output packets (e.g. the native opus encoder numbers packets
+  // with its own sample counter, which also restarts when its buffers are
+  // flushed). To keep the original container timestamps all the way to
+  // the output frames, re-stamp each encoded packet with the container
+  // pts of the frame it was encoded from.
+  type FramePts = { pts: bigint; num: number; den: number };
 
   async function* encodeFrames(
     frames: Frame[],
     encoder: Encoder,
-    offsetter: PtsOffsetter,
+    pendingPts: FramePts[],
   ): AsyncGenerator<Packet> {
     for (const frame of frames) {
+      if (frame.pts !== AV_NOPTS_VALUE && frame.timeBase.den !== 0) {
+        pendingPts.push({
+          pts: frame.pts,
+          num: frame.timeBase.num,
+          den: frame.timeBase.den,
+        });
+      }
       const packets = await encoder.encodeAll(frame);
       frame.free();
-      for (const p of packets) yield offsetter.apply(p);
+      for (const p of packets) {
+        const source = pendingPts.shift();
+        if (source && p.timeBase.den !== 0 && p.timeBase.num !== 0) {
+          // rescale the container pts into the packet's timebase
+          p.pts = p.dts =
+            (source.pts * BigInt(source.num) * BigInt(p.timeBase.den)) /
+            (BigInt(source.den) * BigInt(p.timeBase.num));
+        }
+        yield p;
+      }
     }
   }
 
@@ -810,51 +821,74 @@ export async function prepareStream(
     frames: Frame[],
     filter: FilterAPI,
     encoder: Encoder,
-    offsetter: PtsOffsetter,
+    pendingPts: FramePts[],
   ): AsyncGenerator<Packet> {
     for (const frame of frames) {
       const filtered = await filter.processAll(frame);
       frame.free();
-      yield* encodeFrames(filtered, encoder, offsetter);
+      yield* encodeFrames(filtered, encoder, pendingPts);
     }
   }
 
   async function* transcodeTrack(
     source: AsyncGenerator<Packet | null>,
     chain: TrackChain,
-    onPacket?: (packet: Packet) => void,
+    onPacket: ((packet: Packet) => void) | undefined,
   ): AsyncGenerator<Packet> {
-    const { decoder, encoder, offsetter } = chain;
+    const { decoder, encoder } = chain;
+    // container pts of frames fed to the encoder, in order, used to
+    // re-stamp the encoded packets (see encodeFrames)
+    const pendingPts: FramePts[] = [];
+    let lastDemuxSecs: number | undefined;
+    let packetsSinceSeek = 0;
     for await (const packet of source) {
       if (!packet || cancelSignal?.aborted) break;
+      const secs = packetSecs(packet);
+      if (chain.seekPending) {
+        // wait for the jump to the post-seek packets before flushing, so
+        // the recreated filter graph anchors on post-seek timestamps
+        // (anchoring it on stale queued packets would starve it forever
+        // on backward seeks)
+        const jumped =
+          secs !== undefined &&
+          lastDemuxSecs !== undefined &&
+          Math.abs(secs - lastDemuxSecs) > 0.5;
+        packetsSinceSeek++;
+        if (jumped || packetsSinceSeek > 120) {
+          chain.seekPending = false;
+          packetsSinceSeek = 0;
+          flushChain(chain);
+        }
+      }
+      if (secs !== undefined) lastDemuxSecs = secs;
       onPacket?.(packet);
       const frames = await decoder.decodeAll(packet);
       packet.free();
-      yield* filterEncode(frames, chain.filter, encoder, offsetter);
+      yield* filterEncode(frames, chain.filter, encoder, pendingPts);
     }
     // flush the tail of the transcode chain at EOF
     yield* filterEncode(
       await decoder.decodeAll(null),
       chain.filter,
       encoder,
-      offsetter,
+      pendingPts,
     );
     yield* encodeFrames(
       await chain.filter.processAll(null),
       encoder,
-      offsetter,
+      pendingPts,
     );
-    for (const p of await encoder.encodeAll(null)) yield offsetter.apply(p);
+    for (const p of await encoder.encodeAll(null)) yield p;
   }
 
-  // Drop any frames/packets buffered before a seek and restart the filter
-  // graph (filters keep no user-visible flush API, so they are recreated).
-  // The encoder only reads the filter's metadata after creation, so it can
-  // keep using the stale reference safely.
+  // Flush the codec buffers and restart the filter graph (filters keep no
+  // user-visible flush API, so they are recreated). The encoder is
+  // deliberately not flushed: it is configured without B-frames/lookahead
+  // buffering, so there is (almost) nothing stale to drop, and flushing an
+  // encoder mid-stream wedges it (subsequent sends fail).
   const flushChain = (chain: TrackChain | undefined) => {
     if (!chain) return;
     chain.decoder.getCodecContext()?.flushBuffers();
-    chain.encoder.getCodecContext()?.flushBuffers();
     const oldFilter = chain.filter;
     chain.filter = chain.createFilter();
     oldFilter.close();
@@ -865,14 +899,14 @@ export async function prepareStream(
       for await (const packet of demuxer.packets(vStream!.index)) {
         if (!packet || cancelSignal?.aborted) return;
         trackPosition(packet);
-        let packets = [packet];
+        let out: Packet[] = [packet];
         for (const f of vbsf) {
           const next: Packet[] = [];
-          for (const p of packets) next.push(...(await f.filterAll(p)));
-          packets = next;
+          for (const p of out) next.push(...(await f.filterAll(p)));
+          out = next;
         }
         packet.free();
-        for (const p of packets) yield videoPtsOffsetter.apply(p);
+        for (const p of out) yield p;
       }
       return;
     }
@@ -885,7 +919,11 @@ export async function prepareStream(
 
   async function* audioGenerator(): AsyncGenerator<Packet> {
     if (!includeAudio || !aStream) return;
-    yield* transcodeTrack(demuxer.packets(aStream!.index), audioChain!);
+    yield* transcodeTrack(
+      demuxer.packets(aStream!.index),
+      audioChain!,
+      undefined,
+    );
   }
 
   const videoOut = Readable.from(videoGenerator(), { objectMode: true });
@@ -942,15 +980,22 @@ export async function prepareStream(
           return false;
         }
         try {
-          const ret = await demuxer.seek(positionSeconds);
+          // avformat_seek_file with a tight tolerance: seek as close to the
+          // target as the container allows instead of jumping to the
+          // previous keyframe of the default stream
+          const target = BigInt(Math.floor(positionSeconds * 1_000_000));
+          const ret = await demuxer
+            .getFormatContext()
+            .seekFile(-1, target - 1_000_000n, target, target + 1_000_000n);
           FFmpegError.throwIfError(ret, "seek failed");
         } catch {
           return false;
         }
-        flushChain(videoChain);
-        flushChain(audioChain);
-        videoPtsOffsetter.deferToContinuous();
-        audioPtsOffsetter.deferToContinuous();
+        // the actual flush happens inside each track's generator loop when
+        // the jump to the post-seek packets is spotted, so the recreated
+        // filter graph anchors on post-seek timestamps
+        if (videoChain) videoChain.seekPending = true;
+        if (audioChain) audioChain.seekPending = true;
         currentPosition = positionSeconds;
         return true;
       },
