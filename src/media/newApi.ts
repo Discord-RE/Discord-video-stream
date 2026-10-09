@@ -13,6 +13,8 @@ import {
   AV_LOG_TRACE,
   AV_LOG_VERBOSE,
   AV_LOG_WARNING,
+  AVMEDIA_TYPE_AUDIO,
+  AVMEDIA_TYPE_VIDEO,
   AV_NOPTS_VALUE,
   AV_PKT_FLAG_KEY,
   Log as AVLog,
@@ -33,6 +35,7 @@ import {
   InputFormat,
   type Packet,
   Rational,
+  type Stream,
 } from "node-av";
 import pDebounce from "p-debounce";
 import sharp from "sharp";
@@ -113,9 +116,16 @@ export type PrepareStreamOptions = {
   startPosition: number;
 
   /**
-   * Enable audio output
+   * Select the video stream to play, from the video streams present in the
+   * input. Return null to disable video output
    */
-  includeAudio: boolean;
+  videoStream: (streams: Stream[]) => Stream | null;
+
+  /**
+   * Select the audio stream to play, from the audio streams present in the
+   * input. Return null to disable audio output
+   */
+  audioStream: (streams: Stream[]) => Stream | null;
 
   /**
    * Functions to get encoder settings
@@ -329,7 +339,8 @@ export async function prepareStream(
     bitrateAudio: 128,
     volume: 1,
     startPosition: 0,
-    includeAudio: true,
+    videoStream: (streams) => streams[0] ?? null,
+    audioStream: (streams) => streams[0] ?? null,
     encoder: Encoders.software(),
     minimizeLatency: false,
     customHeaders: {
@@ -392,7 +403,9 @@ export async function prepareStream(
 
       encoder: opts.encoder ?? defaultOptions.encoder,
 
-      includeAudio: opts.includeAudio ?? defaultOptions.includeAudio,
+      videoStream: opts.videoStream ?? defaultOptions.videoStream,
+
+      audioStream: opts.audioStream ?? defaultOptions.audioStream,
 
       minimizeLatency: opts.minimizeLatency ?? defaultOptions.minimizeLatency,
 
@@ -421,7 +434,8 @@ export async function prepareStream(
     bitrateVideoMax,
     videoCodec,
     encoder: encoderGetter,
-    includeAudio,
+    videoStream,
+    audioStream,
     bitrateAudio,
     volume,
     startPosition,
@@ -509,8 +523,15 @@ export async function prepareStream(
     throw new Error("Failed to open input", { cause: e });
   }
 
-  const vStream = demuxer.video();
-  const aStream = demuxer.audio();
+  const videoStreams = demuxer.streams.filter(
+    (s) => s.codecpar.codecType === AVMEDIA_TYPE_VIDEO,
+  );
+  const vStream = videoStream(videoStreams);
+  const aStream = audioStream(
+    demuxer.streams.filter(
+      (s) => s.codecpar.codecType === AVMEDIA_TYPE_AUDIO,
+    ),
+  );
 
   let vbsf: BitStreamFilterAPI[] = [];
 
@@ -532,7 +553,11 @@ export async function prepareStream(
 
   if (!vStream) {
     closePipeline();
-    throw new Error("No video stream in media");
+    throw new Error(
+      videoStreams.length === 0
+        ? "No video stream in media"
+        : "Video output cannot be disabled",
+    );
   }
 
   if (startPosition > 0) {
@@ -600,7 +625,7 @@ export async function prepareStream(
   logger.info({ info: vInfo }, "Prepared video stream");
 
   let aInfo: AudioStreamInfo | undefined;
-  if (includeAudio && aStream) {
+  if (aStream) {
     aInfo = {
       index: aStream.index,
       codec: aStream.codecpar.codecId,
@@ -732,7 +757,7 @@ export async function prepareStream(
 
   let currentVolume = volume;
 
-  if (includeAudio && aStream) {
+  if (aStream) {
     const audioDecoder = await Decoder.create(aStream, {
       exitOnError: false,
       // Discord expects 48kHz stereo opus
@@ -918,19 +943,18 @@ export async function prepareStream(
   }
 
   async function* audioGenerator(): AsyncGenerator<Packet> {
-    if (!includeAudio || !aStream) return;
+    if (!aStream) return;
     yield* transcodeTrack(
-      demuxer.packets(aStream!.index),
+      demuxer.packets(aStream.index),
       audioChain!,
       undefined,
     );
   }
 
   const videoOut = Readable.from(videoGenerator(), { objectMode: true });
-  const audioOut =
-    includeAudio && aStream
-      ? Readable.from(audioGenerator(), { objectMode: true })
-      : undefined;
+  const audioOut = aStream
+    ? Readable.from(audioGenerator(), { objectMode: true })
+    : undefined;
 
   const outputs = [videoOut, ...(audioOut ? [audioOut] : [])];
   const promise = new Promise<void>((resolve, reject) => {
