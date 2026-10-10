@@ -769,12 +769,12 @@ export async function prepareStream(
       },
       signal: cancelSignal,
     });
-    // aresample + asetnsamples pin the graph to exactly one opus frame
+    // asetnsamples pin the graph to exactly one opus frame
     // (960 samples @ 48kHz) per frame, so the encoder emits one packet per
     // frame and ffmpeg propagates consistent container timestamps itself
     const createAudioFilter = () =>
       FilterAPI.create(
-        `volume@internal_lib=${currentVolume},aresample=48000:async=0,asetnsamples=n=960:p=0`,
+        `volume@internal_lib=${currentVolume},asetnsamples=n=960:p=0`,
         {
           signal: cancelSignal,
         },
