@@ -769,10 +769,16 @@ export async function prepareStream(
       },
       signal: cancelSignal,
     });
+    // aresample + asetnsamples pin the graph to exactly one opus frame
+    // (960 samples @ 48kHz) per frame, so the encoder emits one packet per
+    // frame and ffmpeg propagates consistent container timestamps itself
     const createAudioFilter = () =>
-      FilterAPI.create(`volume@internal_lib=${currentVolume}`, {
-        signal: cancelSignal,
-      });
+      FilterAPI.create(
+        `volume@internal_lib=${currentVolume},aresample=48000:async=0:first_pts=0,asetnsamples=n=960:p=0`,
+        {
+          signal: cancelSignal,
+        },
+      );
     const audioFilter = createAudioFilter();
     const audioEncoder = await Encoder.create(FF_ENCODER_LIBOPUS, {
       autoResample: true,
@@ -880,6 +886,7 @@ export async function prepareStream(
         if (jumped || packetsSinceSeek > 120) {
           chain.seekPending = false;
           packetsSinceSeek = 0;
+          pendingPts.length = 0;
           flushChain(chain);
         }
       }
