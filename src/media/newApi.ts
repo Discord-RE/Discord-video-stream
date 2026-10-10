@@ -13,12 +13,12 @@ import {
   AV_LOG_TRACE,
   AV_LOG_VERBOSE,
   AV_LOG_WARNING,
-  AVMEDIA_TYPE_AUDIO,
-  AVMEDIA_TYPE_VIDEO,
   AV_NOPTS_VALUE,
   AV_PKT_FLAG_KEY,
   Log as AVLog,
   type AVLogLevel,
+  AVMEDIA_TYPE_AUDIO,
+  AVMEDIA_TYPE_VIDEO,
   avGetCodecName,
   type BitStreamFilterAPI,
   type CodecContext,
@@ -528,9 +528,7 @@ export async function prepareStream(
   );
   const vStream = videoStream(videoStreams);
   const aStream = audioStream(
-    demuxer.streams.filter(
-      (s) => s.codecpar.codecType === AVMEDIA_TYPE_AUDIO,
-    ),
+    demuxer.streams.filter((s) => s.codecpar.codecType === AVMEDIA_TYPE_AUDIO),
   );
 
   let vbsf: BitStreamFilterAPI[] = [];
