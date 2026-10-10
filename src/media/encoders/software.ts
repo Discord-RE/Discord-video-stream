@@ -1,3 +1,10 @@
+import {
+  FF_ENCODER_LIBSVTAV1,
+  FF_ENCODER_LIBVPX_VP8,
+  FF_ENCODER_LIBVPX_VP9,
+  FF_ENCODER_LIBX264,
+  FF_ENCODER_LIBX265,
+} from "node-av";
 import type { EncoderSettingsGetter } from "./index.js";
 
 type DeepPartial<T> = T extends unknown[]
@@ -49,28 +56,28 @@ export const software = ({
   const { preset: x265Preset = "superfast", tune: x265Tune } = x265 ?? {};
   return (() => ({
     H264: {
-      name: "libx264",
-      options: ["-forced-idr 1", `-tune ${x264Tune}`, `-preset ${x264Preset}`],
+      name: FF_ENCODER_LIBX264,
+      options: { "forced-idr": "1", tune: x264Tune, preset: x264Preset },
     },
     H265: {
-      name: "libx265",
-      options: [
-        "-forced-idr 1",
-        ...(x265Tune ? [`-tune ${x265Tune}`] : []),
-        `-preset ${x265Preset}`,
-      ],
+      name: FF_ENCODER_LIBX265,
+      options: {
+        "forced-idr": "1",
+        ...(x265Tune ? { tune: x265Tune } : {}),
+        preset: x265Preset,
+      },
     },
     VP8: {
-      name: "libvpx",
-      options: ["-deadline 20000"],
+      name: FF_ENCODER_LIBVPX_VP8,
+      options: { deadline: "20000" },
     },
     VP9: {
-      name: "libvpx-vp9",
-      options: ["-deadline 20000"],
+      name: FF_ENCODER_LIBVPX_VP9,
+      options: { deadline: "20000" },
     },
     AV1: {
-      name: "libsvtav1",
-      options: [],
+      name: FF_ENCODER_LIBSVTAV1,
+      options: {},
     },
   })) as EncoderSettingsGetter;
 };
