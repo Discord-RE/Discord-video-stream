@@ -774,7 +774,7 @@ export async function prepareStream(
     // frame and ffmpeg propagates consistent container timestamps itself
     const createAudioFilter = () =>
       FilterAPI.create(
-        `volume@internal_lib=${currentVolume},aresample=48000:async=0:first_pts=0,asetnsamples=n=960:p=0`,
+        `volume@internal_lib=${currentVolume},aresample=48000:async=0,asetnsamples=n=960:p=0`,
         {
           signal: cancelSignal,
         },
