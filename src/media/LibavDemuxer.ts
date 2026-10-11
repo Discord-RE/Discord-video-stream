@@ -7,6 +7,7 @@ import {
   BitStreamFilterAPI,
   type CodecParameters,
   Demuxer,
+  type Encoder,
   type Packet,
   type Rational,
   type Stream,
@@ -119,16 +120,19 @@ type DemuxerOptions = {
  * Build the bitstream filter chain that turns video packets into the annexb
  * format expected by Discord's RTP packetizer. The mp4 -> annexb filters
  * detect already-annexb input on their own and pass it through untouched.
+ *
+ * dump_extra runs with freq=keyframe so every keyframe carries the parameter
+ * sets. Its default (freq=e) only prepends them to the first packet, which is
+ * enough for a container but not for a live stream: a viewer that joins later
+ * lands on a keyframe with no SPS/PPS and cannot start decoding.
  */
 export function createVideoBitStreamFilters(
-  vStream: Stream,
+  source: Stream | Encoder,
+  codecId: AVCodecID,
 ): BitStreamFilterAPI[] {
-  switch (vStream.codecpar.codecId) {
+  switch (codecId) {
     case AVCodecID.AV_CODEC_ID_H264: {
-      const mp4ToAnnexb = BitStreamFilterAPI.create(
-        "h264_mp4toannexb",
-        vStream,
-      );
+      const mp4ToAnnexb = BitStreamFilterAPI.create("h264_mp4toannexb", source);
       // filter_units only inspects NAL headers (no CBS RBSP parsing),
       // so AUD removal stays tolerant of malformed filler.
       const removeAud = BitStreamFilterAPI.create("filter_units", mp4ToAnnexb, {
@@ -136,24 +140,25 @@ export function createVideoBitStreamFilters(
           remove_types: String(H264NalUnitTypes.AccessUnitDelimiter),
         },
       });
-      const dumpExtra = BitStreamFilterAPI.create("dump_extra", removeAud);
+      const dumpExtra = BitStreamFilterAPI.create("dump_extra", removeAud, {
+        options: { freq: "keyframe" },
+      });
       return [mp4ToAnnexb, removeAud, dumpExtra];
     }
     case AVCodecID.AV_CODEC_ID_HEVC: {
-      const mp4ToAnnexb = BitStreamFilterAPI.create(
-        "hevc_mp4toannexb",
-        vStream,
-      );
+      const mp4ToAnnexb = BitStreamFilterAPI.create("hevc_mp4toannexb", source);
       const removeAud = BitStreamFilterAPI.create("filter_units", mp4ToAnnexb, {
         options: {
           remove_types: String(H265NalUnitTypes.AUD_NUT),
         },
       });
-      const dumpExtra = BitStreamFilterAPI.create("dump_extra", removeAud);
+      const dumpExtra = BitStreamFilterAPI.create("dump_extra", removeAud, {
+        options: { freq: "keyframe" },
+      });
       return [mp4ToAnnexb, removeAud, dumpExtra];
     }
     default:
-      return [BitStreamFilterAPI.create("null", vStream)];
+      return [BitStreamFilterAPI.create("null", source)];
   }
 }
 
@@ -264,7 +269,7 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
       throw new Error(`Video codec ${codecName} is not allowed`);
     }
     try {
-      vbsf.push(...createVideoBitStreamFilters(vStream));
+      vbsf.push(...createVideoBitStreamFilters(vStream, codecId));
     } catch (e) {
       cleanup();
       throw new Error("Failed to construct bitstream filterchain", {

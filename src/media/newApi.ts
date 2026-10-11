@@ -270,7 +270,14 @@ function packetSecs(packet: Packet): number | undefined {
 
 /**
  * Container timestamps of a frame fed to an encoder, used to re-stamp the
- * encoded packet
+ * encoded packet.
+ *
+ * Encoders don't necessarily preserve the input frame timestamps in their
+ * output packets (e.g. the native opus encoder numbers packets with its own
+ * sample counter, which also restarts when its buffers are flushed). To keep
+ * the original container timestamps all the way to the output frames, each
+ * encoded packet is re-stamped with the pts and duration of the frame it was
+ * encoded from.
  */
 type FramePts = { pts: bigint; duration: bigint; timeBase: IRational };
 
@@ -540,8 +547,6 @@ export async function prepareStream(
     demuxer.streams.filter((s) => s.codecpar.codecType === AVMEDIA_TYPE_AUDIO),
   );
 
-  let vbsf: BitStreamFilterAPI[] = [];
-
   let videoChain: TrackChain | undefined;
   let audioChain: TrackChain | undefined;
 
@@ -549,12 +554,12 @@ export async function prepareStream(
     demuxer.close();
     probeWrapper?.destroy();
     if (typeof input !== "string") input.destroy();
-    for (const filter of vbsf) filter.close();
     for (const chain of [videoChain, audioChain]) {
       if (!chain) continue;
-      chain.decoder.close();
-      chain.filter.close();
-      chain.encoder.close();
+      chain.transcode?.decoder.close();
+      chain.transcode?.filter.close();
+      chain.transcode?.encoder.close();
+      for (const filter of chain.bsf) filter.close();
     }
   };
 
@@ -587,11 +592,6 @@ export async function prepareStream(
     closePipeline();
     throw new Error(`Video codec ${codecName} is not allowed`);
   }
-
-  // only the passthrough path needs the mp4 -> annexb conversion: encoders
-  // created without a global header flag already emit annexb, with the
-  // parameter sets repeated before each keyframe
-  vbsf = noTranscoding ? createVideoBitStreamFilters(vStream) : [];
 
   const codecpar = vStream.codecpar;
   const inWidth = codecpar.width ?? 0;
@@ -643,17 +643,59 @@ export async function prepareStream(
     logger.info({ info: aInfo }, "Prepared audio stream");
   }
 
-  type TrackChain = {
+  /**
+   * The decode -> filter -> encode stage of a track. Absent when transcoding
+   * is off: the track then passes the demuxer's packets straight through its
+   * bitstream filters.
+   */
+  type TranscodeStage = {
     decoder: Decoder;
     filter: FilterAPI;
     encoder: Encoder;
     createFilter: () => FilterAPI;
+  };
+
+  type TrackChain = {
+    transcode: TranscodeStage | null;
     // set by controller.seek; the track's generator loop consumes it when
     // the jump to the post-seek packets is spotted, so the flush (and the
     // filter recreation, which anchors the new filter graph on post-seek
     // timestamps) happens exactly at the content boundary
     seekPending: boolean;
+    // annexb conversion + per-keyframe parameter sets, run over the track's
+    // output on its way out, whether that output is encoded or passthrough
+    bsf: BitStreamFilterAPI[];
+    /*
+     * The pipeline stages. drainChain() runs one packet through each in turn,
+     * each stage reading the previous stage's array and filling its own, so no
+     * stage calls the next. A null entry means "flush me": it is passed on to
+     * the next stage once the current one has drained.
+     */
+    /** what the decoder produced from the packet fed in */
+    decoderOutput: (Frame | null)[];
+    /** what the filter produced from decoderOutput */
+    filterOutput: (Frame | null)[];
+    /** what the encoder produced from filterOutput, on its way to the bsf */
+    encoderOutput: Packet[];
+    /**
+     * container timestamps of the frames handed to the encoder, matched to its
+     * output packets one for one
+     */
+    frameStamps: Queue<FramePts>;
   };
+
+  const newTrackChain = (
+    transcode: TranscodeStage | null,
+    bsf: BitStreamFilterAPI[],
+  ): TrackChain => ({
+    transcode,
+    seekPending: false,
+    bsf,
+    decoderOutput: [],
+    filterOutput: [],
+    encoderOutput: [],
+    frameStamps: new Queue(),
+  });
 
   if (!noTranscoding) {
     const encoderSettings = encoderGetter(bitrateVideo, bitrateVideoMax)[
@@ -753,13 +795,27 @@ export async function prepareStream(
       encoderSettings.name,
       encoderOptions,
     );
-    videoChain = {
-      decoder: videoDecoder,
-      filter: videoFilter,
-      encoder: videoEncoder,
-      createFilter: createVideoFilter,
-      seekPending: false,
-    };
+    videoChain = newTrackChain(
+      {
+        decoder: videoDecoder,
+        filter: videoFilter,
+        encoder: videoEncoder,
+        createFilter: createVideoFilter,
+      },
+      // fed by the encoder: the parameter sets live in its extradata, so
+      // dump_extra can re-insert them before every keyframe
+      createVideoBitStreamFilters(
+        videoEncoder,
+        preparedVideoCodecMap[videoCodec],
+      ),
+    );
+  } else {
+    // no transcode stage: the demuxer's packets are the output, they only
+    // need the annexb conversion
+    videoChain = newTrackChain(
+      null,
+      createVideoBitStreamFilters(vStream, vStream.codecpar.codecId),
+    );
   }
 
   let currentVolume = volume;
@@ -796,13 +852,16 @@ export async function prepareStream(
       context: { bitRate: `${bitrateAudio}k` },
       signal: cancelSignal,
     });
-    audioChain = {
-      decoder: audioDecoder,
-      filter: audioFilter,
-      encoder: audioEncoder,
-      createFilter: createAudioFilter,
-      seekPending: false,
-    };
+    audioChain = newTrackChain(
+      {
+        decoder: audioDecoder,
+        filter: audioFilter,
+        encoder: audioEncoder,
+        createFilter: createAudioFilter,
+      },
+      // opus is not a video codec, so there is no annexb conversion to do
+      [],
+    );
   }
 
   const totalDuration =
@@ -819,75 +878,19 @@ export async function prepareStream(
     if (secs !== undefined) currentPosition = secs;
   };
 
-  // Encoders don't necessarily preserve the input frame timestamps in
-  // their output packets (e.g. the native opus encoder numbers packets
-  // with its own sample counter, which also restarts when its buffers are
-  // flushed). To keep the original container timestamps all the way to
-  // the output frames, re-stamp each encoded packet with the container
-  // pts and duration of the frame it was encoded from.
-
-  async function* encodeFrames(
-    // null flushes the encoder: it drains its own buffered frames (lookahead,
-    // reordering), which are still queued in pendingPts
-    frames: Frame[] | null,
-    encoder: Encoder,
-    pendingPts: Queue<FramePts>,
-  ): AsyncGenerator<Packet> {
-    for (const frame of frames ?? [null]) {
-      if (frame && frame.pts !== AV_NOPTS_VALUE && frame.timeBase.den !== 0) {
-        pendingPts.enqueue({
-          pts: frame.pts,
-          duration: frame.duration,
-          timeBase: frame.timeBase,
-        });
-      }
-      const packets = await encoder.encodeAll(frame);
-      frame?.free();
-      for (const p of packets) {
-        const source = pendingPts.dequeue();
-        if (source && p.timeBase.den !== 0 && p.timeBase.num !== 0) {
-          // rescale the container pts into the packet's timebase
-          p.pts = p.dts = avRescaleQ(source.pts, source.timeBase, p.timeBase);
-          /**
-           * Copy the duration of the source frame onto its encoded packet, rescaled into
-           * the packet's timebase.
-           *
-           * Encoders with AV_CODEC_CAP_DELAY are expected to timestamp their own output
-           * packets, and ffmpeg only backfills `pkt->duration` on the no-delay path, so
-           * the AMF encoders leave it at 0. Downstream that reads as a 0ms frametime: no
-           * pacing, and an RTP timestamp that never advances.
-           */
-          p.duration = avRescaleQ(source.duration, source.timeBase, p.timeBase);
-        }
-        yield p;
-      }
-    }
-  }
-
-  async function* filterEncode(
-    frames: Frame[],
-    filter: FilterAPI,
-    encoder: Encoder,
-    pendingPts: Queue<FramePts>,
-  ): AsyncGenerator<Packet> {
-    for (const frame of frames) {
-      const filtered = await filter.processAll(frame);
-      frame.free();
-      yield* encodeFrames(filtered, encoder, pendingPts);
-    }
-  }
-
-  async function* transcodeTrack(
+  /**
+   * Pump one track: consume the demuxer's packets for it and yield the
+   * packets to send to Discord, transcoded if the chain has a transcode
+   * stage and otherwise passed through untouched.
+   */
+  async function* pumpTrack(
     source: AsyncGenerator<Packet | null>,
     chain: TrackChain,
     onPacket: ((packet: Packet) => void) | undefined,
   ): AsyncGenerator<Packet> {
-    const { decoder, encoder } = chain;
-    // container pts of frames fed to the encoder, in order, used to
-    // re-stamp the encoded packets (see encodeFrames)
-    const pendingPts = new Queue<FramePts>();
     let lastDemuxSecs: number | undefined;
     let packetsSinceSeek = 0;
+
     for await (const packet of source) {
       if (!packet || cancelSignal?.aborted) break;
       const secs = packetSecs(packet);
@@ -904,7 +907,7 @@ export async function prepareStream(
         if (jumped || packetsSinceSeek > 120) {
           chain.seekPending = false;
           packetsSinceSeek = 0;
-          // pendingPts is deliberately left alone: the encoder is not flushed
+          // frameStamps is deliberately left alone: the encoder is not flushed
           // (see flushChain), so it still holds the frames these entries
           // describe and will emit their packets. Dropping the entries would
           // leave every one of those packets matched to the wrong frame, and
@@ -914,23 +917,96 @@ export async function prepareStream(
       }
       if (secs !== undefined) lastDemuxSecs = secs;
       onPacket?.(packet);
-      const frames = await decoder.decodeAll(packet);
+
+      // with a transcode stage the decoder reads the packet and the stages
+      // behind it work on frames; without one the packet itself is what the
+      // bitstream filters read. Either way it is done with afterwards.
+      yield* drainChain(chain, packet);
       packet.free();
-      yield* filterEncode(frames, chain.filter, encoder, pendingPts);
     }
-    // flush the tail of the transcode chain at EOF
-    yield* filterEncode(
-      await decoder.decodeAll(null),
-      chain.filter,
-      encoder,
-      pendingPts,
-    );
-    yield* encodeFrames(
-      await chain.filter.processAll(null),
-      encoder,
-      pendingPts,
-    );
-    yield* encodeFrames(null, encoder, pendingPts);
+    if (!chain.transcode) return;
+    // flush the decoder, and with it the filter and the encoder behind it
+    yield* drainChain(chain, null);
+  }
+
+  /**
+   * Run one packet through every stage of the chain in turn, yielding the
+   * packets that come out the far end. Each stage reads the array the previous
+   * one filled and fills its own, so no stage calls the next.
+   *
+   * A null packet means "flush": the decoder drains its buffered frames, and
+   * the null is handed on so the filter drains next, and then the encoder,
+   * which still holds frames of its own (lookahead, reordering) and emits
+   * packets for them.
+   *
+   * Encoded packets are re-stamped from the FramePts the frames were queued
+   * with, to keep the container timestamps.
+   */
+  async function* drainChain(
+    chain: TrackChain,
+    packet: Packet | null,
+  ): AsyncGenerator<Packet> {
+    const transcode = chain.transcode;
+
+    if (!transcode) {
+      chain.encoderOutput = packet ? [packet] : [];
+    } else {
+      // decoder
+      chain.decoderOutput = await transcode.decoder.decodeAll(packet);
+      if (!packet) chain.decoderOutput.push(null);
+
+      // filter
+      chain.filterOutput = [];
+      for (const frame of chain.decoderOutput) {
+        chain.filterOutput.push(...(await transcode.filter.processAll(frame)));
+        frame?.free();
+      }
+      if (!packet) chain.filterOutput.push(null);
+
+      // encoder
+      chain.encoderOutput = [];
+      for (const frame of chain.filterOutput) {
+        if (frame && frame.pts !== AV_NOPTS_VALUE && frame.timeBase.den !== 0) {
+          chain.frameStamps.enqueue({
+            pts: frame.pts,
+            duration: frame.duration,
+            timeBase: frame.timeBase,
+          });
+        }
+        chain.encoderOutput.push(...(await transcode.encoder.encodeAll(frame)));
+        frame?.free();
+      }
+
+      // match each encoded packet back to the frame it was encoded from
+      for (const p of chain.encoderOutput) {
+        const stamp = chain.frameStamps.dequeue();
+        if (stamp && p.timeBase.den !== 0 && p.timeBase.num !== 0) {
+          p.pts = p.dts = avRescaleQ(stamp.pts, stamp.timeBase, p.timeBase);
+          /**
+           * The duration is copied for the same reason, and is just as
+           * necessary: encoders with AV_CODEC_CAP_DELAY timestamp their own
+           * output packets, and ffmpeg only backfills `pkt->duration` on the
+           * no-delay path, so the AMF encoders leave it at 0. Downstream that
+           * reads as a 0ms frametime: no pacing, and an RTP timestamp that
+           * never advances.
+           */
+          p.duration = avRescaleQ(stamp.duration, stamp.timeBase, p.timeBase);
+        }
+      }
+    }
+
+    // the bitstream filters: the mp4 -> annexb conversion, plus the
+    // per-keyframe parameter sets. Both paths need this: passthrough packets
+    // are length-prefixed, and encoders that do not repeat their parameter
+    // sets before every keyframe (h264_amf emits them once, in extradata, and
+    // bare IDRs after that) leave a mid-stream viewer with nothing to decode.
+    let out = chain.encoderOutput;
+    for (const f of chain.bsf) {
+      const next: Packet[] = [];
+      for (const p of out) next.push(...(await f.filterAll(p)));
+      out = next;
+    }
+    for (const p of out) yield p;
   }
 
   // Flush the codec buffers and restart the filter graph (filters keep no
@@ -939,30 +1015,15 @@ export async function prepareStream(
   // buffering, so there is (almost) nothing stale to drop, and flushing an
   // encoder mid-stream wedges it (subsequent sends fail).
   const flushChain = (chain: TrackChain | undefined) => {
-    if (!chain) return;
-    chain.decoder.getCodecContext()?.flushBuffers();
-    const oldFilter = chain.filter;
-    chain.filter = chain.createFilter();
-    oldFilter.close();
+    if (!chain?.transcode) return;
+    const { decoder, filter, createFilter } = chain.transcode;
+    decoder.getCodecContext()?.flushBuffers();
+    chain.transcode.filter = createFilter();
+    filter.close();
   };
 
   async function* videoGenerator(): AsyncGenerator<Packet> {
-    if (noTranscoding) {
-      for await (const packet of demuxer.packets(vStream!.index)) {
-        if (!packet || cancelSignal?.aborted) return;
-        trackPosition(packet);
-        let out: Packet[] = [packet];
-        for (const f of vbsf) {
-          const next: Packet[] = [];
-          for (const p of out) next.push(...(await f.filterAll(p)));
-          out = next;
-        }
-        packet.free();
-        for (const p of out) yield p;
-      }
-      return;
-    }
-    yield* transcodeTrack(
+    yield* pumpTrack(
       demuxer.packets(vStream!.index),
       videoChain!,
       trackPosition,
@@ -971,7 +1032,7 @@ export async function prepareStream(
 
   async function* audioGenerator(): AsyncGenerator<Packet> {
     if (!aStream) return;
-    yield* transcodeTrack(
+    yield* pumpTrack(
       demuxer.packets(aStream.index),
       audioChain!,
       undefined,
@@ -1013,9 +1074,9 @@ export async function prepareStream(
       },
       async setVolume(newVolume: number) {
         if (!Number.isFinite(newVolume) || newVolume < 0) return false;
-        if (!audioChain) return false;
+        if (!audioChain?.transcode) return false;
         try {
-          audioChain.filter.sendCommand(
+          audioChain.transcode.filter.sendCommand(
             "volume@internal_lib",
             "volume",
             String(newVolume),
