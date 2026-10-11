@@ -39,6 +39,7 @@ import {
 } from "node-av";
 import pDebounce from "p-debounce";
 import sharp from "sharp";
+import Queue from "yocto-queue";
 import type { Streamer } from "../client/index.js";
 import type { WebRtcConnWrapper } from "../client/voice/WebRtcWrapper.js";
 import type { SupportedVideoCodec } from "../utils.js";
@@ -263,6 +264,30 @@ function packetSecs(packet: Packet): number | undefined {
     return undefined;
   }
   return (Number(packet.pts) * num) / den;
+}
+
+/**
+ * Container timestamps of a frame fed to an encoder, used to re-stamp the
+ * encoded packet
+ */
+type FramePts = { pts: bigint; duration: bigint; num: number; den: number };
+
+/**
+ * Copy the duration of the source frame onto its encoded packet, rescaled into
+ * the packet's timebase.
+ *
+ * Encoders with AV_CODEC_CAP_DELAY are expected to timestamp their own output
+ * packets, and ffmpeg only backfills `pkt->duration` on the no-delay path, so
+ * the AMF encoders leave it at 0. Downstream that reads as a 0ms frametime: no
+ * pacing, and an RTP timestamp that never advances.
+ */
+function copyFrameDuration(packet: Packet, source: FramePts): void {
+  if (packet.duration > 0n || source.duration <= 0n) return;
+  const { den, num } = packet.timeBase;
+  if (den === 0 || num === 0) return;
+  packet.duration =
+    (source.duration * BigInt(source.num) * BigInt(den)) /
+    (BigInt(source.den) * BigInt(num));
 }
 
 /**
@@ -815,31 +840,34 @@ export async function prepareStream(
   // with its own sample counter, which also restarts when its buffers are
   // flushed). To keep the original container timestamps all the way to
   // the output frames, re-stamp each encoded packet with the container
-  // pts of the frame it was encoded from.
-  type FramePts = { pts: bigint; num: number; den: number };
+  // pts and duration of the frame it was encoded from.
 
   async function* encodeFrames(
-    frames: Frame[],
+    // null flushes the encoder: it drains its own buffered frames (lookahead,
+    // reordering), which are still queued in pendingPts
+    frames: Frame[] | null,
     encoder: Encoder,
-    pendingPts: FramePts[],
+    pendingPts: Queue<FramePts>,
   ): AsyncGenerator<Packet> {
-    for (const frame of frames) {
-      if (frame.pts !== AV_NOPTS_VALUE && frame.timeBase.den !== 0) {
-        pendingPts.push({
+    for (const frame of frames ?? [null]) {
+      if (frame && frame.pts !== AV_NOPTS_VALUE && frame.timeBase.den !== 0) {
+        pendingPts.enqueue({
           pts: frame.pts,
+          duration: frame.duration,
           num: frame.timeBase.num,
           den: frame.timeBase.den,
         });
       }
       const packets = await encoder.encodeAll(frame);
-      frame.free();
+      frame?.free();
       for (const p of packets) {
-        const source = pendingPts.shift();
+        const source = pendingPts.dequeue();
         if (source && p.timeBase.den !== 0 && p.timeBase.num !== 0) {
           // rescale the container pts into the packet's timebase
           p.pts = p.dts =
             (source.pts * BigInt(source.num) * BigInt(p.timeBase.den)) /
             (BigInt(source.den) * BigInt(p.timeBase.num));
+          copyFrameDuration(p, source);
         }
         yield p;
       }
@@ -850,7 +878,7 @@ export async function prepareStream(
     frames: Frame[],
     filter: FilterAPI,
     encoder: Encoder,
-    pendingPts: FramePts[],
+    pendingPts: Queue<FramePts>,
   ): AsyncGenerator<Packet> {
     for (const frame of frames) {
       const filtered = await filter.processAll(frame);
@@ -867,7 +895,7 @@ export async function prepareStream(
     const { decoder, encoder } = chain;
     // container pts of frames fed to the encoder, in order, used to
     // re-stamp the encoded packets (see encodeFrames)
-    const pendingPts: FramePts[] = [];
+    const pendingPts = new Queue<FramePts>();
     let lastDemuxSecs: number | undefined;
     let packetsSinceSeek = 0;
     for await (const packet of source) {
@@ -886,7 +914,11 @@ export async function prepareStream(
         if (jumped || packetsSinceSeek > 120) {
           chain.seekPending = false;
           packetsSinceSeek = 0;
-          pendingPts.length = 0;
+          // pendingPts is deliberately left alone: the encoder is not flushed
+          // (see flushChain), so it still holds the frames these entries
+          // describe and will emit their packets. Dropping the entries would
+          // leave every one of those packets matched to the wrong frame, and
+          // the last one to an empty queue.
           flushChain(chain);
         }
       }
@@ -908,7 +940,7 @@ export async function prepareStream(
       encoder,
       pendingPts,
     );
-    for (const p of await encoder.encodeAll(null)) yield p;
+    yield* encodeFrames(null, encoder, pendingPts);
   }
 
   // Flush the codec buffers and restart the filter graph (filters keep no
