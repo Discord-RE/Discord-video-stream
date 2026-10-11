@@ -1032,11 +1032,7 @@ export async function prepareStream(
 
   async function* audioGenerator(): AsyncGenerator<Packet> {
     if (!aStream) return;
-    yield* pumpTrack(
-      demuxer.packets(aStream.index),
-      audioChain!,
-      undefined,
-    );
+    yield* pumpTrack(demuxer.packets(aStream.index), audioChain!, undefined);
   }
 
   const videoOut = Readable.from(videoGenerator(), { objectMode: true });
