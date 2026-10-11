@@ -20,7 +20,11 @@ import {
   type AVLogLevel,
   AVMEDIA_TYPE_AUDIO,
   AVMEDIA_TYPE_VIDEO,
+  type AVPixelFormat,
+  type AVSampleFormat,
   avGetCodecName,
+  avGetPixFmtName,
+  avGetSampleFmtName,
   avRescaleQ,
   avRescaleRnd,
   type BitStreamFilterAPI,
@@ -257,17 +261,20 @@ const avLogLevels = {
 } satisfies Record<FfmpegLogLevel, AVLogLevel>;
 
 /**
- * Packet pts in seconds, or undefined when the packet carries no
- * usable timestamp
+ * A pts in seconds, or undefined when it carries no usable timestamp (the
+ * unset sentinel, or a time base that cannot scale it)
  */
-function packetSecs(packet: Packet): number | undefined {
-  if (packet.pts === AV_NOPTS_VALUE) return undefined;
-  const { num, den } = packet.timeBase;
+function ptsSecs(pts: bigint, timeBase: Rational): number | undefined {
+  if (pts === AV_NOPTS_VALUE) return undefined;
+  const { num, den } = timeBase;
   if (!Number.isFinite(num) || !Number.isFinite(den) || den === 0) {
     return undefined;
   }
-  return (Number(packet.pts) * num) / den;
+  return (Number(pts) * num) / den;
 }
+
+/** Packet pts in seconds, or undefined when it carries no usable timestamp */
+const packetSecs = (packet: Packet) => ptsSecs(packet.pts, packet.timeBase);
 
 /**
  * Container timestamps of a frame fed to an encoder, used to re-stamp the
@@ -281,6 +288,105 @@ function packetSecs(packet: Packet): number | undefined {
  * encoded from.
  */
 type FramePts = { pts: bigint; duration: bigint; timeBase: IRational };
+
+/**
+ * Codec name for logs. The local AVCodecID enum and the bindings' one hold the
+ * same numbers, so the cast only bridges the two nominally distinct types.
+ */
+const codecName = (codecId: number) =>
+  avGetCodecName(codecId as Parameters<typeof avGetCodecName>[0]);
+
+/** Readable rational ("num/den"), for logs carrying time bases and framerates */
+function describeRational(rational: Rational): string {
+  return `${rational.num}/${rational.den}`;
+}
+
+/**
+ * A pts in seconds rounded to milliseconds, for the log helpers. Raw values
+ * carry float noise from the time base conversion ("0.30000000000000004"),
+ * which crowds out the fields worth reading in a per-frame trace.
+ */
+function stampSecs(pts: bigint, timeBase: Rational): number | undefined {
+  const secs = ptsSecs(pts, timeBase);
+  return secs === undefined ? undefined : Math.round(secs * 1000) / 1000;
+}
+
+/**
+ * Snapshot of a frame's identity for tracing. Must be taken before the frame
+ * is freed: every property reads straight out of the native frame.
+ */
+function describeFrame(frame: Frame) {
+  const { timeBase } = frame;
+  const common = {
+    pts: stampSecs(frame.pts, timeBase),
+    duration: stampSecs(frame.duration, timeBase),
+    timeBase: describeRational(timeBase),
+  };
+  // audio frames carry no dimensions, so they are described by their sample
+  // count and sample format instead
+  if (frame.nbSamples > 0) {
+    return {
+      ...common,
+      samples: frame.nbSamples,
+      sampleFormat:
+        avGetSampleFmtName(frame.format as AVSampleFormat) ?? frame.format,
+    };
+  }
+  return {
+    ...common,
+    width: frame.width,
+    height: frame.height,
+    format: avGetPixFmtName(frame.format as AVPixelFormat) ?? frame.format,
+    memory: frame.hwFramesCtx ? "hardware" : "system",
+  };
+}
+
+/** Snapshot of a packet's identity for tracing */
+function describePacket(packet: Packet) {
+  const { timeBase, flags } = packet;
+  return {
+    pts: stampSecs(packet.pts, timeBase),
+    dts: stampSecs(packet.dts, timeBase),
+    duration: stampSecs(packet.duration, timeBase),
+    timeBase: describeRational(timeBase),
+    size: packet.size,
+    key: (flags & AV_PKT_FLAG_KEY) !== 0,
+  };
+}
+
+/** What the demuxer found in one of the input's streams */
+function describeStream(stream: Stream) {
+  const { codecpar } = stream;
+  // every value is converted to a number: the log serializer cannot handle
+  // the bigints the native wrappers return
+  const common = {
+    index: stream.index,
+    codec: codecName(codecpar.codecId),
+    bitRate: Number(codecpar.bitRate),
+    duration: Number(stream.duration),
+    timeBase: describeRational(stream.timeBase),
+  };
+  if (codecpar.codecType === AVMEDIA_TYPE_VIDEO) {
+    const framerate = streamFrameRate(stream);
+    return {
+      ...common,
+      type: "video",
+      width: codecpar.width,
+      height: codecpar.height,
+      format: avGetPixFmtName(codecpar.format as AVPixelFormat),
+      framerate: framerate.den > 0 ? framerate.num / framerate.den : undefined,
+    };
+  }
+  if (codecpar.codecType === AVMEDIA_TYPE_AUDIO) {
+    return {
+      ...common,
+      type: "audio",
+      sampleRate: codecpar.sampleRate,
+      channels: codecpar.channels,
+    };
+  }
+  return { ...common, type: "other" };
+}
 
 /**
  * Compute the output video dimensions like ffmpeg's scale filter does with
@@ -481,6 +587,7 @@ async function openInput(
   options: PrepareStreamOptions,
   signal?: AbortSignal,
 ): Promise<{ demuxer: Demuxer; probeWrapper?: PassThrough }> {
+  const logger = new Log("prepareStream:input");
   const demuxerOptions = {
     options: buildInputOptions(input, options),
     bufferSize: 8192,
@@ -491,12 +598,29 @@ async function openInput(
     copyTs: true,
   };
 
+  logger.info(
+    {
+      source: typeof input === "string" ? input : "readable",
+      inputOptions: demuxerOptions.options,
+    },
+    "Opening input",
+  );
+
   let probeWrapper: PassThrough | undefined;
   try {
     if (typeof input !== "string") {
+      logger.debug("Probing the input format from the first bytes");
       const probed = await probeFormat(input);
       if (!probed?.format?.name)
         throw new Error("Could not detect the input format");
+      logger.info(
+        {
+          format: probed.format.name,
+          longName: probed.format.longName,
+          probedBytes: probed.buffer.length,
+        },
+        "Probed input format",
+      );
       probeWrapper = new PassThrough();
       probeWrapper.write(probed.buffer);
       input.pipe(probeWrapper);
@@ -514,6 +638,7 @@ async function openInput(
       probeWrapper?.destroy();
       input.destroy();
     }
+    logger.error(e, "Failed to open input");
     throw new Error("Failed to open input", { cause: e });
   }
 }
@@ -543,8 +668,28 @@ type TranscodeStage = {
   createFilter: () => FilterAPI;
 };
 
+/**
+ * A track's loggers. Each pipeline stage gets its own namespace so a trace can
+ * be narrowed to a single stage, e.g. only what the filter produced:
+ * `DEBUG="trace:prepareStream:video:filter"`. Note the level goes in front of
+ * the namespace, and that the namespace match is anchored, so a parent needs a
+ * trailing wildcard: `DEBUG="trace:prepareStream:video*"`.
+ */
+type TrackChainLoggers = {
+  /** track-level events: setup, flush, close, packets on the track's output */
+  track: Log;
+  /** the packet fed to the decoder, and the frames it produced */
+  decode: Log;
+  /** the frames the filter produced from the decoder's */
+  filter: Log;
+  /** the frames handed to the encoder, and the packets it emitted */
+  encode: Log;
+};
+
 type TrackChain = {
   transcode: TranscodeStage | null;
+  /** this track's per-stage loggers */
+  loggers: TrackChainLoggers;
   // set by controller.seek; the track's generator loop consumes it when
   // the jump to the post-seek packets is spotted, so the flush (and the
   // filter recreation, which anchors the new filter graph on post-seek
@@ -573,10 +718,17 @@ type TrackChain = {
 };
 
 const newTrackChain = (
+  name: "video" | "audio",
   transcode: TranscodeStage | null,
   bsf: BitStreamFilterAPI[],
 ): TrackChain => ({
   transcode,
+  loggers: {
+    track: new Log(`prepareStream:${name}`),
+    decode: new Log(`prepareStream:${name}:decode`),
+    filter: new Log(`prepareStream:${name}:filter`),
+    encode: new Log(`prepareStream:${name}:encode`),
+  },
   seekPending: false,
   bsf,
   decoderOutput: [],
@@ -588,6 +740,7 @@ const newTrackChain = (
 /** Release every codec/filter/bitstream-filter resource a chain holds */
 function closeChain(chain: TrackChain | undefined) {
   if (!chain) return;
+  chain.loggers.track.debug("Closing the chain");
   chain.transcode?.decoder.close();
   chain.transcode?.filter.close();
   chain.transcode?.encoder.close();
@@ -611,6 +764,7 @@ async function createVideoChain(params: {
 }): Promise<TrackChain> {
   const { stream, codec, options, sourceFramerate, outputSize, signal } =
     params;
+  const logger = new Log("prepareStream:video");
   const {
     videoCodec,
     bitrateVideo,
@@ -625,31 +779,65 @@ async function createVideoChain(params: {
   if (!settings)
     throw new Error(`Encoder settings not specified for ${videoCodec}`);
 
+  logger.info(
+    {
+      codec: videoCodec,
+      encoder: settings.name,
+      device: settings.device,
+      outputOptions: settings.options,
+      bitrateVideo,
+      bitrateVideoMax,
+    },
+    "Using video encoder",
+  );
+  const decoderCodec = codecName(stream.codecpar.codecId);
+
   // Deduce the hardware context from the encoder name (e.g. "h264_vaapi" ->
   // VAAPI), so any hardware encoder works without per-encoder special cases
   const hw = hardwareForEncoder(settings.name);
-  const hardware = hw && HardwareContext.create(hw.deviceType, settings.device);
-  if (hw && !hardware) {
-    throw new Error(
-      `Failed to create hardware device context for ${settings.name}`,
+  let hwContext: HardwareContext | null = null;
+  let hwScaleFilter: string | null = null;
+  let hwDecodeWorks = false;
+  if (hw) {
+    hwContext = HardwareContext.create(hw.deviceType, settings.device);
+    if (hwContext) {
+      logger.debug(
+        { deviceType: hwContext.deviceTypeName, device: settings.device },
+        "Created hardware device context",
+      );
+    } else {
+      throw new Error(
+        `Failed to create hardware device context for ${settings.name}`,
+      );
+    }
+
+    // HW decode + HW scale when the encoder's context can decode the input,
+    // else decode and scale on the CPU. The check must be an actual hardware
+    // test: getDecoderCodec only reports the registered hw configs, which say
+    // nothing about driver support.
+    hwDecodeWorks = hwContext.testDecoder(stream.codecpar.codecId);
+    logger.info(
+      {
+        decoderCodec,
+        hardwareDecode: hwDecodeWorks,
+      },
+      hwDecodeWorks
+        ? "Using hardware decoding"
+        : "Hardware decoding failed, falling back to software",
     );
+    if (hwDecodeWorks) {
+      hwScaleFilter = hw.scaleFilter;
+    }
+  } else {
+    logger.info({ decoderCodec }, "Using software decoding");
   }
 
-  // HW decode + HW scale when the encoder's context can decode the input
-  // and the encoder has a hardware scaler, else decode and scale on the CPU.
-  // The check must be an actual hardware test: getDecoderCodec only reports
-  // the registered hw configs, which say nothing about driver support.
-  const hwChain =
-    hw?.scaleFilter && hardware?.testDecoder(stream.codecpar.codecId)
-      ? { hardware, scaleFilter: hw.scaleFilter }
-      : null;
-
   const outFilters = settings.outFilters;
-  const filterSpec = hwChain
+  const filterSpec = hwScaleFilter
     ? [
         // the upload passes hardware frames through untouched
         "hwupload",
-        `${hwChain.scaleFilter}=w=${outputSize.width}:h=${outputSize.height}:format=nv12`,
+        `${hwScaleFilter}=w=${outputSize.width}:h=${outputSize.height}:format=nv12`,
         ...(frameRate ? [`fps=${frameRate}`] : []),
       ].join(",")
     : [
@@ -662,10 +850,15 @@ async function createVideoChain(params: {
       ].join(",");
   // the encode context always goes to the filterchain: the upload filters
   // (hwupload) need it for their hardware frames context
-  const createFilter = () => FilterAPI.create(filterSpec, { hardware, signal });
+  const createFilter = () =>
+    FilterAPI.create(filterSpec, { hardware: hwContext, signal });
+  logger.info(
+    { filterSpec, hardware: hwContext?.deviceTypeName },
+    "Using video filter graph",
+  );
 
   const decoderOptions: DecoderOptions = {
-    hardware: hwChain?.hardware ?? null,
+    hardware: hwDecodeWorks ? hwContext : null,
     exitOnError: false,
     signal,
   };
@@ -680,6 +873,14 @@ async function createVideoChain(params: {
   try {
     videoFilter = createFilter();
     videoDecoder = await Decoder.create(stream, decoderOptions);
+    logger.debug(
+      {
+        decoder: decoderCodec,
+        hardware: hwDecodeWorks ? hwContext?.deviceTypeName : null,
+        minimizeLatency,
+      },
+      "Created video decoder",
+    );
 
     // pass the target framerate explicitly: the framerate the encoder derives
     // itself (from the filter/decoder stream) may be wrong or missing, which
@@ -709,8 +910,21 @@ async function createVideoChain(params: {
       signal,
     };
     const videoEncoder = await Encoder.create(settings.name, encoderOptions);
+    logger.debug(
+      {
+        encoder: settings.name,
+        // the context carries a Rational, which the serializer can't handle
+        targetFramerate: describeRational(targetFramerate),
+        targetFps,
+        bitRate: `${bitrateVideo}k`,
+        rcMaxRate: `${bitrateVideoMax}k`,
+        gopSize: encoderOptions.context?.gopSize,
+      },
+      "Created video encoder",
+    );
 
     return newTrackChain(
+      "video",
       {
         decoder: videoDecoder,
         filter: videoFilter,
@@ -722,6 +936,7 @@ async function createVideoChain(params: {
       createVideoBitStreamFilters(videoEncoder, codec),
     );
   } catch (e) {
+    logger.error(e, "Failed to create the video chain");
     // release whatever was created before the failure
     videoDecoder?.close();
     videoFilter?.close();
@@ -741,6 +956,19 @@ async function createAudioChain(params: {
   signal?: AbortSignal;
 }): Promise<TrackChain> {
   const { stream, bitrate, getVolume, signal } = params;
+  const logger = new Log("prepareStream:audio");
+
+  logger.info(
+    {
+      decoder: codecName(stream.codecpar.codecId),
+      encoder: FF_ENCODER_LIBOPUS,
+      bitrate,
+      sampleRate: stream.codecpar.sampleRate,
+      channels: stream.codecpar.channels,
+      volume: getVolume(),
+    },
+    "Using audio encoder",
+  );
 
   let audioDecoder: Decoder | undefined;
   let audioFilter: FilterAPI | undefined;
@@ -776,6 +1004,7 @@ async function createAudioChain(params: {
     });
 
     return newTrackChain(
+      "audio",
       {
         decoder: audioDecoder,
         filter: audioFilter,
@@ -786,6 +1015,7 @@ async function createAudioChain(params: {
       [],
     );
   } catch (e) {
+    logger.error(e, "Failed to create the audio chain");
     // release whatever was created before the failure
     audioDecoder?.close();
     audioFilter?.close();
@@ -811,18 +1041,52 @@ async function* drainChain(
   packet: Packet | null,
 ): AsyncGenerator<Packet> {
   const transcode = chain.transcode;
+  // each stage's snapshots are only taken when its own trace is on, so the
+  // disabled case costs nothing but the check
+  const {
+    decode: decodeLog,
+    filter: filterLog,
+    encode: encodeLog,
+    track: trackLog,
+  } = chain.loggers;
+  const traceDecode = decodeLog.enabled.trace;
+  const traceFilter = filterLog.enabled.trace;
+  const traceEncode = encodeLog.enabled.trace;
+  const traceTrack = trackLog.enabled.trace;
 
   if (!transcode) {
     chain.encoderOutput = packet ? [packet] : [];
+    if (traceTrack && packet)
+      trackLog.trace({ packet: describePacket(packet) }, "passthrough packet");
   } else {
     // decoder
     chain.decoderOutput = await transcode.decoder.decodeAll(packet);
+    if (traceDecode) {
+      const frames = chain.decoderOutput.filter((f) => f !== null);
+      decodeLog.trace(
+        {
+          input: packet && describePacket(packet),
+          frames: frames.map(describeFrame),
+        },
+        `decoded ${frames.length} frame(s)`,
+      );
+    }
     if (!packet) chain.decoderOutput.push(null);
 
     // filter
     chain.filterOutput = [];
     for (const frame of chain.decoderOutput) {
-      chain.filterOutput.push(...(await transcode.filter.processAll(frame)));
+      const filtered = await transcode.filter.processAll(frame);
+      if (traceFilter && frame) {
+        filterLog.trace(
+          {
+            input: describeFrame(frame),
+            frames: filtered.filter((f) => f !== null).map(describeFrame),
+          },
+          `filtered frame into ${filtered.length} frame(s)`,
+        );
+      }
+      chain.filterOutput.push(...filtered);
       frame?.free();
     }
     if (!packet) chain.filterOutput.push(null);
@@ -837,7 +1101,14 @@ async function* drainChain(
           timeBase: frame.timeBase,
         });
       }
-      chain.encoderOutput.push(...(await transcode.encoder.encodeAll(frame)));
+      const encoded = await transcode.encoder.encodeAll(frame);
+      if (traceEncode && frame) {
+        encodeLog.trace(
+          { frame: describeFrame(frame), packets: encoded.map(describePacket) },
+          `encoded frame into ${encoded.length} packet(s)`,
+        );
+      }
+      chain.encoderOutput.push(...encoded);
       frame?.free();
     }
 
@@ -856,6 +1127,8 @@ async function* drainChain(
          */
         p.duration = avRescaleQ(stamp.duration, stamp.timeBase, p.timeBase);
       }
+      if (traceEncode)
+        encodeLog.trace({ packet: describePacket(p) }, "restamped packet");
     }
   }
 
@@ -870,7 +1143,11 @@ async function* drainChain(
     for (const p of out) next.push(...(await f.filterAll(p)));
     out = next;
   }
-  for (const p of out) yield p;
+  for (const p of out) {
+    if (traceTrack)
+      trackLog.trace({ packet: describePacket(p) }, "output packet");
+    yield p;
+  }
 }
 
 // Flush the codec buffers and restart the filter graph (filters keep no
@@ -899,6 +1176,7 @@ async function* pumpTrack(
 ): AsyncGenerator<Packet> {
   let lastDemuxSecs: number | undefined;
   let packetsSinceSeek = 0;
+  const { track: logger } = chain.loggers;
 
   for await (const packet of source) {
     if (!packet || signal?.aborted) break;
@@ -916,6 +1194,10 @@ async function* pumpTrack(
       if (jumped || packetsSinceSeek > 120) {
         chain.seekPending = false;
         packetsSinceSeek = 0;
+        logger.debug(
+          { jumped, packetsSinceSeek, from: lastDemuxSecs, to: secs },
+          "Flushing the chain after seek",
+        );
         // frameStamps is deliberately left alone: the encoder is not flushed
         // (see flushChain), so it still holds the frames these entries
         // describe and will emit their packets. Dropping the entries would
@@ -934,6 +1216,7 @@ async function* pumpTrack(
     packet.free();
   }
   if (!chain.transcode) return;
+  logger.debug("Flushing the chain at the end of the track");
   // flush the decoder, and with it the filter and the encoder behind it
   yield* drainChain(chain, null);
 }
@@ -1042,6 +1325,7 @@ export async function prepareStream(
   let videoChain: TrackChain | undefined;
   let audioChain: TrackChain | undefined;
   const closePipeline = () => {
+    logger.debug("Closing the pipeline");
     demuxer.close();
     probeWrapper?.destroy();
     if (typeof input !== "string") input.destroy();
@@ -1059,6 +1343,24 @@ export async function prepareStream(
     const vStream = videoStream(videoStreams);
     const aStream = audioStream(audioStreams);
 
+    logger.info(
+      {
+        format: demuxer.formatName,
+        duration: demuxer.duration,
+        bitRate: demuxer.bitRate,
+        streams: demuxer.streams.map(describeStream),
+      },
+      "Opened demuxer",
+    );
+    logger.debug(
+      {
+        videoStreams: videoStreams.map((s) => s.index),
+        audioStreams: audioStreams.map((s) => s.index),
+        selected: { video: vStream?.index, audio: aStream?.index },
+      },
+      "Selected streams",
+    );
+
     if (!vStream) {
       throw new Error(
         videoStreams.length === 0
@@ -1068,6 +1370,7 @@ export async function prepareStream(
     }
 
     if (startPosition > 0) {
+      logger.info({ startPosition }, "Seeking to the start position");
       try {
         await seekTo(demuxer, startPosition);
       } catch (e) {
@@ -1079,7 +1382,7 @@ export async function prepareStream(
 
     if (noTranscoding && !allowedVideoCodec.has(vStream.codecpar.codecId)) {
       throw new Error(
-        `Video codec ${avGetCodecName(vStream.codecpar.codecId)} is not allowed`,
+        `Video codec ${codecName(vStream.codecpar.codecId)} is not allowed`,
       );
     }
 
@@ -1122,10 +1425,25 @@ export async function prepareStream(
 
     const state: PlaybackState = { position: undefined, volume };
 
+    logger.debug(
+      {
+        transcode: !noTranscoding,
+        videoCodec,
+        outputCodec: codecName(outputCodec),
+        outputSize,
+        sourceFramerate: describeRational(sourceFramerate),
+        frameRate,
+      },
+      "Creating the video chain",
+    );
     videoChain = noTranscoding
       ? // no transcode stage: the demuxer's packets are the output, they
         // only need the annexb conversion
-        newTrackChain(null, createVideoBitStreamFilters(vStream, outputCodec))
+        newTrackChain(
+          "video",
+          null,
+          createVideoBitStreamFilters(vStream, outputCodec),
+        )
       : await createVideoChain({
           stream: vStream,
           codec: outputCodec,
@@ -1148,6 +1466,28 @@ export async function prepareStream(
       demuxer.duration > 0 && Number.isFinite(demuxer.duration)
         ? demuxer.duration
         : undefined;
+
+    logger.info(
+      {
+        video: {
+          stream: vInfo.index,
+          codec: codecName(outputCodec),
+          width: vInfo.width,
+          height: vInfo.height,
+          framerate: `${vInfo.framerate_num}/${vInfo.framerate_den}`,
+          transcode: !noTranscoding,
+        },
+        audio: aInfo
+          ? {
+              stream: aInfo.index,
+              codec: codecName(aInfo.codec),
+              sampleRate: aInfo.sample_rate,
+            }
+          : undefined,
+        duration: totalDuration,
+      },
+      "Pipeline ready",
+    );
 
     // track the position from the video packets on their way out
     const trackPosition = (packet: Packet) => {

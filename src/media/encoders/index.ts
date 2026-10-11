@@ -34,8 +34,8 @@ export type EncoderSettings = {
 export type HardwareEncoderInfo = {
   /** Hardware device type used for the device context */
   deviceType: AVHWDeviceType;
-  /** Hardware scale filter, when the encoder has one */
-  scaleFilter?: string;
+  /** Hardware scale filter */
+  scaleFilter: string;
 };
 
 const hardwareBySuffix: Record<string, HardwareEncoderInfo> = {
