@@ -6,7 +6,7 @@ import type {
 import {
   AV_HWDEVICE_TYPE_AMF,
   AV_HWDEVICE_TYPE_CUDA,
-  AV_HWDEVICE_TYPE_D3D11VA,
+  AV_HWDEVICE_TYPE_D3D12VA,
   AV_HWDEVICE_TYPE_QSV,
   AV_HWDEVICE_TYPE_VAAPI,
   AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
@@ -49,7 +49,10 @@ const hardwareBySuffix: Record<string, HardwareEncoderInfo> = {
     scaleFilter: "scale_vt",
   },
   amf: { deviceType: AV_HWDEVICE_TYPE_AMF, scaleFilter: "vpp_amf" },
-  d3d11va: { deviceType: AV_HWDEVICE_TYPE_D3D11VA },
+  d3d12va: {
+    deviceType: AV_HWDEVICE_TYPE_D3D12VA,
+    scaleFilter: "scale_d3d12",
+  },
 };
 
 export function hardwareForEncoder(name: string): HardwareEncoderInfo | null {
@@ -63,6 +66,7 @@ export type EncoderSettingsGetter = (
 ) => Partial<Record<SupportedVideoCodec, EncoderSettings>>;
 
 import { amf } from "./amf.js";
+import { d3d12va } from "./d3d12va.js";
 import { merge } from "./merge.js";
 import { nvenc } from "./nvenc.js";
 import { qsv } from "./qsv.js";
@@ -79,6 +83,7 @@ const Encoders = {
   videotoolbox,
   amf,
   v4l2m2m,
+  d3d12va,
   merge,
 };
 
