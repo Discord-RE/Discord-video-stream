@@ -1347,7 +1347,7 @@ export async function prepareStream(
       {
         format: demuxer.formatName,
         duration: demuxer.duration,
-        bitRate: demuxer.bitRate,
+        bitRate: demuxer.bitRate * 1000,
         streams: demuxer.streams.map(describeStream),
       },
       "Opened demuxer",
