@@ -15,12 +15,14 @@ import {
   AV_LOG_WARNING,
   AV_NOPTS_VALUE,
   AV_PKT_FLAG_KEY,
+  AV_ROUND_NEAR_INF,
   Log as AVLog,
   type AVLogLevel,
   AVMEDIA_TYPE_AUDIO,
   AVMEDIA_TYPE_VIDEO,
   avGetCodecName,
   avRescaleQ,
+  avRescaleRnd,
   type BitStreamFilterAPI,
   type CodecContext,
   Decoder,
@@ -254,10 +256,6 @@ const avLogLevels = {
   trace: AV_LOG_TRACE,
 } satisfies Record<FfmpegLogLevel, AVLogLevel>;
 
-function roundEven(n: number) {
-  return n % 2 === 0 ? n : n + 1;
-}
-
 /**
  * Packet pts in seconds, or undefined when the packet carries no
  * usable timestamp
@@ -301,16 +299,37 @@ function computeScaledDims(
       height: height > 0 ? height : inHeight,
     };
   }
-  if (width < 0 && height < 0) {
-    return { width: roundEven(inWidth), height: roundEven(inHeight) };
+  let w = width === 0 ? inWidth : Math.trunc(width);
+  let h = height === 0 ? inHeight : Math.trunc(height);
+  const factorW = w < -1 ? -w : 1;
+  const factorH = h < -1 ? -h : 1;
+  if (w < 0 && h < 0) {
+    w = inWidth;
+    h = inHeight;
   }
-  if (width < 0) {
-    return { width: roundEven((height * inWidth) / inHeight), height };
+  if (w < 0) {
+    w =
+      Number(
+        avRescaleRnd(
+          BigInt(h),
+          BigInt(inWidth),
+          BigInt(inHeight) * BigInt(factorW),
+          AV_ROUND_NEAR_INF,
+        ),
+      ) * factorW;
   }
-  if (height < 0) {
-    return { width, height: roundEven((width * inHeight) / inWidth) };
+  if (h < 0) {
+    h =
+      Number(
+        avRescaleRnd(
+          BigInt(w),
+          BigInt(inHeight),
+          BigInt(inWidth) * BigInt(factorH),
+          AV_ROUND_NEAR_INF,
+        ),
+      ) * factorH;
   }
-  return { width, height };
+  return { width: w, height: h };
 }
 
 /**
