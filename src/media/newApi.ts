@@ -20,6 +20,7 @@ import {
   AVMEDIA_TYPE_AUDIO,
   AVMEDIA_TYPE_VIDEO,
   avGetCodecName,
+  avRescaleQ,
   type BitStreamFilterAPI,
   type CodecContext,
   Decoder,
@@ -33,6 +34,7 @@ import {
   type Frame,
   HardwareContext,
   InputFormat,
+  type IRational,
   type Packet,
   Rational,
   type Stream,
@@ -270,25 +272,7 @@ function packetSecs(packet: Packet): number | undefined {
  * Container timestamps of a frame fed to an encoder, used to re-stamp the
  * encoded packet
  */
-type FramePts = { pts: bigint; duration: bigint; num: number; den: number };
-
-/**
- * Copy the duration of the source frame onto its encoded packet, rescaled into
- * the packet's timebase.
- *
- * Encoders with AV_CODEC_CAP_DELAY are expected to timestamp their own output
- * packets, and ffmpeg only backfills `pkt->duration` on the no-delay path, so
- * the AMF encoders leave it at 0. Downstream that reads as a 0ms frametime: no
- * pacing, and an RTP timestamp that never advances.
- */
-function copyFrameDuration(packet: Packet, source: FramePts): void {
-  if (packet.duration > 0n || source.duration <= 0n) return;
-  const { den, num } = packet.timeBase;
-  if (den === 0 || num === 0) return;
-  packet.duration =
-    (source.duration * BigInt(source.num) * BigInt(den)) /
-    (BigInt(source.den) * BigInt(num));
-}
+type FramePts = { pts: bigint; duration: bigint; timeBase: IRational };
 
 /**
  * Compute the output video dimensions like ffmpeg's scale filter does with
@@ -854,8 +838,7 @@ export async function prepareStream(
         pendingPts.enqueue({
           pts: frame.pts,
           duration: frame.duration,
-          num: frame.timeBase.num,
-          den: frame.timeBase.den,
+          timeBase: frame.timeBase,
         });
       }
       const packets = await encoder.encodeAll(frame);
@@ -864,10 +847,17 @@ export async function prepareStream(
         const source = pendingPts.dequeue();
         if (source && p.timeBase.den !== 0 && p.timeBase.num !== 0) {
           // rescale the container pts into the packet's timebase
-          p.pts = p.dts =
-            (source.pts * BigInt(source.num) * BigInt(p.timeBase.den)) /
-            (BigInt(source.den) * BigInt(p.timeBase.num));
-          copyFrameDuration(p, source);
+          p.pts = p.dts = avRescaleQ(source.pts, source.timeBase, p.timeBase);
+          /**
+           * Copy the duration of the source frame onto its encoded packet, rescaled into
+           * the packet's timebase.
+           *
+           * Encoders with AV_CODEC_CAP_DELAY are expected to timestamp their own output
+           * packets, and ffmpeg only backfills `pkt->duration` on the no-delay path, so
+           * the AMF encoders leave it at 0. Downstream that reads as a 0ms frametime: no
+           * pacing, and an RTP timestamp that never advances.
+           */
+          p.duration = avRescaleQ(source.duration, source.timeBase, p.timeBase);
         }
         yield p;
       }
