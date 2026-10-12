@@ -1046,7 +1046,8 @@ async function* drainChain(
       trackLog.trace({ packet: describePacket(packet) }, "passthrough packet");
   } else {
     // decoder
-    const decoderOutput: (Frame | null)[] = await transcode.decoder.decodeAll(packet);
+    const decoderOutput: (Frame | null)[] =
+      await transcode.decoder.decodeAll(packet);
     if (traceDecode) {
       const frames = decoderOutput.filter((f) => f !== null);
       decodeLog.trace(
