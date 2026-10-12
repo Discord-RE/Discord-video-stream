@@ -698,18 +698,6 @@ type TrackChain = {
   // annexb conversion + per-keyframe parameter sets, run over the track's
   // output on its way out, whether that output is encoded or passthrough
   bsf: BitStreamFilterAPI[];
-  /*
-   * The pipeline stages. drainChain() runs one packet through each in turn,
-   * each stage reading the previous stage's array and filling its own, so no
-   * stage calls the next. A null entry means "flush me": it is passed on to
-   * the next stage once the current one has drained.
-   */
-  /** what the decoder produced from the packet fed in */
-  decoderOutput: (Frame | null)[];
-  /** what the filter produced from decoderOutput */
-  filterOutput: (Frame | null)[];
-  /** what the encoder produced from filterOutput, on its way to the bsf */
-  encoderOutput: Packet[];
   /**
    * container timestamps of the frames handed to the encoder, matched to its
    * output packets one for one
@@ -731,9 +719,6 @@ const newTrackChain = (
   },
   seekPending: false,
   bsf,
-  decoderOutput: [],
-  filterOutput: [],
-  encoderOutput: [],
   frameStamps: new Queue(),
 });
 
@@ -1054,15 +1039,16 @@ async function* drainChain(
   const traceEncode = encodeLog.enabled.trace;
   const traceTrack = trackLog.enabled.trace;
 
+  let out: Packet[];
   if (!transcode) {
-    chain.encoderOutput = packet ? [packet] : [];
+    out = packet ? [packet] : [];
     if (traceTrack && packet)
       trackLog.trace({ packet: describePacket(packet) }, "passthrough packet");
   } else {
     // decoder
-    chain.decoderOutput = await transcode.decoder.decodeAll(packet);
+    const decoderOutput: (Frame | null)[] = await transcode.decoder.decodeAll(packet);
     if (traceDecode) {
-      const frames = chain.decoderOutput.filter((f) => f !== null);
+      const frames = decoderOutput.filter((f) => f !== null);
       decodeLog.trace(
         {
           input: packet && describePacket(packet),
@@ -1071,11 +1057,11 @@ async function* drainChain(
         `decoded ${frames.length} frame(s)`,
       );
     }
-    if (!packet) chain.decoderOutput.push(null);
+    if (!packet) decoderOutput.push(null);
 
     // filter
-    chain.filterOutput = [];
-    for (const frame of chain.decoderOutput) {
+    const filterOutput: (Frame | null)[] = [];
+    for (const frame of decoderOutput) {
       const filtered = await transcode.filter.processAll(frame);
       if (traceFilter && frame) {
         filterLog.trace(
@@ -1086,14 +1072,14 @@ async function* drainChain(
           `filtered frame into ${filtered.length} frame(s)`,
         );
       }
-      chain.filterOutput.push(...filtered);
+      filterOutput.push(...filtered);
       frame?.free();
     }
-    if (!packet) chain.filterOutput.push(null);
+    if (!packet) filterOutput.push(null);
 
     // encoder
-    chain.encoderOutput = [];
-    for (const frame of chain.filterOutput) {
+    const encoderOutput: Packet[] = [];
+    for (const frame of filterOutput) {
       if (frame && frame.pts !== AV_NOPTS_VALUE && frame.timeBase.den !== 0) {
         chain.frameStamps.enqueue({
           pts: frame.pts,
@@ -1108,12 +1094,12 @@ async function* drainChain(
           `encoded frame into ${encoded.length} packet(s)`,
         );
       }
-      chain.encoderOutput.push(...encoded);
+      encoderOutput.push(...encoded);
       frame?.free();
     }
 
     // match each encoded packet back to the frame it was encoded from
-    for (const p of chain.encoderOutput) {
+    for (const p of encoderOutput) {
       const stamp = chain.frameStamps.dequeue();
       if (stamp && p.timeBase.den !== 0 && p.timeBase.num !== 0) {
         p.pts = p.dts = avRescaleQ(stamp.pts, stamp.timeBase, p.timeBase);
@@ -1130,6 +1116,8 @@ async function* drainChain(
       if (traceEncode)
         encodeLog.trace({ packet: describePacket(p) }, "restamped packet");
     }
+
+    out = encoderOutput;
   }
 
   // the bitstream filters: the mp4 -> annexb conversion, plus the
@@ -1137,10 +1125,12 @@ async function* drainChain(
   // are length-prefixed, and encoders that do not repeat their parameter
   // sets before every keyframe (h264_amf emits them once, in extradata, and
   // bare IDRs after that) leave a mid-stream viewer with nothing to decode.
-  let out = chain.encoderOutput;
   for (const f of chain.bsf) {
     const next: Packet[] = [];
-    for (const p of out) next.push(...(await f.filterAll(p)));
+    for (const p of out) {
+      next.push(...(await f.filterAll(p)));
+      p.free();
+    }
     out = next;
   }
   for (const p of out) {
