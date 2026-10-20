@@ -179,9 +179,15 @@ bitrateVideoMax?: number;
  */
 bitrateAudio?: number;
 /**
- * Enable audio output
+ * Select the video stream to play, from the video streams present in the
+ * input. Return null to disable video output
  */
-includeAudio?: boolean;
+videoStream?: (streams: Stream[]) => Stream | null;
+/**
+ * Select the audio stream to play, from the audio streams present in the
+ * input. Return null to disable audio output
+ */
+audioStream?: (streams: Stream[]) => Stream | null;
 /**
  * Output video codec. **Only** supports H264, H265, and VP8 currently
  */
