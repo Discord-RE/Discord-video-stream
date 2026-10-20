@@ -17,7 +17,6 @@ import {
   AV_PKT_FLAG_KEY,
   AV_ROUND_NEAR_INF,
   Log as AVLog,
-  type AVLogLevel,
   AVMEDIA_TYPE_AUDIO,
   AVMEDIA_TYPE_VIDEO,
   type AVPixelFormat,
@@ -66,18 +65,6 @@ import {
   type VideoStreamInfo,
 } from "./LibavDemuxer.js";
 import { VideoStream } from "./VideoStream.js";
-
-/** FFmpeg log levels, quietest first */
-type FfmpegLogLevel =
-  | "quiet"
-  | "panic"
-  | "fatal"
-  | "error"
-  | "warning"
-  | "info"
-  | "verbose"
-  | "debug"
-  | "trace";
 
 export type PrepareStreamOptions = {
   /**
@@ -182,11 +169,6 @@ export type PrepareStreamOptions = {
    * transcoding in-process
    */
   customFfmpegFlags: string[];
-
-  /**
-   * FFmpeg log level
-   */
-  logLevel: FfmpegLogLevel;
 };
 
 export type Controller = {
@@ -247,18 +229,6 @@ const preparedVideoCodecMap: Record<SupportedVideoCodec, AVCodecID> = {
   VP9: AVCodecID.AV_CODEC_ID_VP9,
   AV1: AVCodecID.AV_CODEC_ID_AV1,
 };
-
-const avLogLevels = {
-  quiet: AV_LOG_QUIET,
-  panic: AV_LOG_PANIC,
-  fatal: AV_LOG_FATAL,
-  error: AV_LOG_ERROR,
-  warning: AV_LOG_WARNING,
-  info: AV_LOG_INFO,
-  verbose: AV_LOG_VERBOSE,
-  debug: AV_LOG_DEBUG,
-  trace: AV_LOG_TRACE,
-} satisfies Record<FfmpegLogLevel, AVLogLevel>;
 
 /**
  * A pts in seconds, or undefined when it carries no usable timestamp (the
@@ -486,7 +456,6 @@ const DEFAULT_PREPARE_OPTIONS: PrepareStreamOptions = {
   },
   customInputOptions: [],
   customFfmpegFlags: [],
-  logLevel: "verbose",
 };
 
 /** Rounded, finite and non-zero (negatives allowed, e.g. -2 = keep aspect ratio) */
@@ -540,7 +509,6 @@ function resolveOptions(
     customHeaders: { ...defaults.customHeaders, ...opts.customHeaders },
     customInputOptions: opts.customInputOptions ?? defaults.customInputOptions,
     customFfmpegFlags: opts.customFfmpegFlags ?? defaults.customFfmpegFlags,
-    logLevel: opts.logLevel ?? defaults.logLevel,
   };
 }
 
@@ -1297,10 +1265,8 @@ export async function prepareStream(
     audioStream,
     customInputOptions,
     customFfmpegFlags,
-    logLevel,
   } = resolved;
 
-  AVLog.setLevel(avLogLevels[logLevel]);
   if (customInputOptions.length > 0 || customFfmpegFlags.length > 0) {
     logger.warn(
       "customInputOptions and customFfmpegFlags only apply to the ffmpeg CLI; they are ignored when transcoding in-process",
