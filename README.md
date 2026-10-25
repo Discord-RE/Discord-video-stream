@@ -100,8 +100,9 @@ Start sending media
 ```typescript
 import { prepareStream, playStream, Utils, Encoders } from "@dank074/discord-video-stream"
 try {
-    // NVENC is also available, change Encoders.software to Encoders.nvenc and
-    // adapt the settings
+    // Hardware encoders are also available: Encoders.nvenc, Encoders.qsv,
+    // Encoders.videotoolbox, Encoders.amf, Encoders.v4l2m2m and
+    // Encoders.vaapi (see the encoder docs for their settings)
     let encoder = Encoders.software({
         x264: {
             preset: "superfast"
@@ -110,7 +111,7 @@ try {
             preset: "superfast"
         }
     });
-    const { command, output } = prepareStream("DIRECT VIDEO URL OR READABLE STREAM HERE", {
+    const { output, promise } = await prepareStream("DIRECT VIDEO URL OR READABLE STREAM HERE", {
         encoder,
 
         // Specify either width or height for aspect ratio aware scaling
@@ -123,8 +124,8 @@ try {
         bitrateVideoMax: 7500,
         videoCodec: Utils.normalizeVideoCodec("H264" /* or H265 */),
     });
-    command.on("error", (err, stdout, stderr) => {
-        // Handle ffmpeg errors here
+    promise.catch((err) => {
+        // Handle transcode pipeline errors here
     });
 
     await playStream(output, streamer, {
@@ -178,14 +179,15 @@ bitrateVideoMax?: number;
  */
 bitrateAudio?: number;
 /**
- * Enable audio output
+ * Select the video stream to play, from the video streams present in the
+ * input. Return null to disable video output
  */
-includeAudio?: boolean;
+videoStream?: (streams: Stream[]) => Stream | null;
 /**
- * Enables hardware accelerated video decoding. Enabling this option might result in an exception
- * being thrown by Ffmpeg process if your system does not support hardware acceleration
+ * Select the audio stream to play, from the audio streams present in the
+ * input. Return null to disable audio output
  */
-hardwareAcceleratedDecoding?: boolean;
+audioStream?: (streams: Stream[]) => Stream | null;
 /**
  * Output video codec. **Only** supports H264, H265, and VP8 currently
  */
@@ -202,11 +204,17 @@ customHeaders?: Record<string, string>;
 /**
    * Custom input options to pass directly to ffmpeg
    * These will be added to the command *before* other options
+   *
+   * NOTE: only applies to the ffmpeg CLI, and is ignored when transcoding
+   * in-process
  */
 customInputOptions?: string[];
 /**
  * Custom ffmpeg flags/options to pass directly to ffmpeg
  * These will be added to the command *after* other options
+ *
+ * NOTE: only applies to the ffmpeg CLI, and is ignored when transcoding
+ * in-process
  */
 customFfmpegFlags?: string[];
 ```
