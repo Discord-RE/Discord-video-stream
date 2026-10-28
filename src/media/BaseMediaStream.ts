@@ -11,10 +11,11 @@ import { AV_NOPTS_VALUE, type Packet } from "node-av";
 const SEEK_JUMP_THRESHOLD_MS = 1000;
 
 /*
- * Upper bound for how long the A/V sync "ahead" wait sleeps while the
- * other stream catches up. Gaps beyond this (e.g. the other stream hasn't
- * processed a seek yet) can never be closed by waiting in real time, so
- * the wait is capped instead of freezing this stream for the whole gap.
+ * Sync gaps larger than this can never be closed by waiting in real time
+ * (it would take `delta`ms): instead of waiting up to it per frame, a gap
+ * this wide means the other stream's timestamps have moved away wholesale
+ * (e.g. it was seeked and is still draining stale content), so this stream
+ * races instead. Normal per-frame gaps stay well below this.
  */
 const MAX_SYNC_WAIT_MS = 3000;
 
@@ -212,30 +213,49 @@ export class BaseMediaStream extends Writable {
        * at most `delta`ms. If it hasn't caught up by then it is starved (e.g.
        * the demuxer is blocked by backpressure on our own queue), and waiting
        * forever would deadlock the pipeline.
-       *
-       * The wait is additionally capped: a lead of many seconds (e.g. the
-       * other stream hasn't processed a seek yet) can never be closed by
-       * waiting in real time, so freeze at most MAX_SYNC_WAIT_MS per frame
-       * and let the behind side race to catch up instead.
        */
-      const deadline =
-        performance.now() + Math.min(this.ptsDelta ?? 0, MAX_SYNC_WAIT_MS);
-      do {
+      const delta = this.ptsDelta ?? 0;
+      if (delta > MAX_SYNC_WAIT_MS) {
+        /*
+         * A gap this wide cannot be closed by waiting in real time: it would
+         * take `delta`ms. It means the other stream's timestamps have moved
+         * away wholesale (e.g. the other stream was seeked and is still
+         * draining its stale pre-seek content, which runs minutes ahead of
+         * ours). Waiting would freeze this stream into a multi-second
+         * slideshow per frame, so race instead and let both streams re-anchor
+         * on their post-seek frames.
+         */
         this._loggerSync.debug(
           {
             stats: {
               pts: this.pts,
               pts_other: this.syncStream?.pts,
-              frametime,
+              pts_delta: delta,
             },
           },
-          `Stream is ahead. Waiting for ${frametime}ms`,
+          "Stream is far ahead. Not waiting for the other stream",
         );
-        await setTimeout(frametime);
-        if (performance.now() >= deadline) break;
-      } while (this.sync && this.isAhead);
-      this.resetTimingCompensation();
-      callback(null);
+        this.resetTimingCompensation();
+        callback(null);
+      } else {
+        const deadline = performance.now() + delta;
+        do {
+          this._loggerSync.debug(
+            {
+              stats: {
+                pts: this.pts,
+                pts_other: this.syncStream?.pts,
+                frametime,
+              },
+            },
+            `Stream is ahead. Waiting for ${frametime}ms`,
+          );
+          await setTimeout(frametime);
+          if (performance.now() >= deadline) break;
+        } while (this.sync && this.isAhead);
+        this.resetTimingCompensation();
+        callback(null);
+      }
     } else {
       this._loggerSleep.debug(
         {

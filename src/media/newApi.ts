@@ -7,6 +7,7 @@ import {
   AV_NOPTS_VALUE,
   AV_PKT_FLAG_KEY,
   AV_ROUND_NEAR_INF,
+  AV_TIME_BASE_Q,
   AVMEDIA_TYPE_AUDIO,
   AVMEDIA_TYPE_VIDEO,
   type AVPixelFormat,
@@ -14,6 +15,7 @@ import {
   avGetCodecName,
   avGetPixFmtName,
   avGetSampleFmtName,
+  avGuessFrameRate,
   avRescaleQ,
   avRescaleRnd,
   type BitStreamFilterAPI,
@@ -51,7 +53,6 @@ import {
   allowedVideoCodec,
   createVideoBitStreamFilters,
   demux,
-  streamFrameRate,
   type VideoStreamInfo,
 } from "./LibavDemuxer.js";
 import { VideoStream } from "./VideoStream.js";
@@ -257,7 +258,7 @@ const codecName = (codecId: number) =>
   avGetCodecName(codecId as Parameters<typeof avGetCodecName>[0]);
 
 /** Readable rational ("num/den"), for logs carrying time bases and framerates */
-function describeRational(rational: Rational): string {
+function describeRational(rational: IRational): string {
   return `${rational.num}/${rational.den}`;
 }
 
@@ -327,7 +328,7 @@ function describeStream(stream: Stream) {
     timeBase: describeRational(stream.timeBase),
   };
   if (codecpar.codecType === AVMEDIA_TYPE_VIDEO) {
-    const framerate = streamFrameRate(stream);
+    const framerate = avGuessFrameRate(stream);
     return {
       ...common,
       type: "video",
@@ -624,6 +625,18 @@ type TranscodeStage = {
   filter: FilterAPI;
   encoder: Encoder;
   createFilter: () => FilterAPI;
+  /**
+   * The monotonic clock the encoder is fed from, in microseconds. Frames
+   * are stamped with it (advanced by each frame's duration) instead of
+   * their container timestamps before encoding: encoders require strictly
+   * increasing timestamps, which a seek violates by moving the container
+   * timeline backward, and node-av drops frames that fall entirely before
+   * the encoder's last tick - freezing the video output while audio keeps
+   * going. On the synthetic clock every frame is in order, no matter how
+   * the source seeks. The real container timestamps are restored on the
+   * output packets through frameStamps.
+   */
+  syntheticPtsUs: bigint;
 };
 
 /**
@@ -700,7 +713,7 @@ async function createVideoChain(params: {
   /** codec of the packets the encoder emits */
   codec: AVCodecID;
   options: PrepareStreamOptions;
-  sourceFramerate: Rational;
+  sourceFramerate: IRational;
   /** dimensions the video is scaled to */
   outputSize: { width: number; height: number };
   signal?: AbortSignal;
@@ -839,7 +852,9 @@ async function createVideoChain(params: {
       autoFormat: true,
       context: {
         ...(targetFramerate.num > 0 && targetFramerate.den > 0
-          ? { framerate: targetFramerate }
+          ? {
+              framerate: new Rational(targetFramerate.num, targetFramerate.den),
+            }
           : {}),
         bitRate: `${bitrateVideo}k`,
         rcMaxRate: `${bitrateVideoMax}k`,
@@ -873,6 +888,7 @@ async function createVideoChain(params: {
         filter: videoFilter,
         encoder: videoEncoder,
         createFilter,
+        syntheticPtsUs: 0n,
       },
       // fed by the encoder: the parameter sets live in its extradata, so
       // dump_extra can re-insert them before every keyframe
@@ -953,6 +969,7 @@ async function createAudioChain(params: {
         filter: audioFilter,
         encoder: audioEncoder,
         createFilter,
+        syntheticPtsUs: 0n,
       },
       // opus is not a video codec, so there is no annexb conversion to do
       [],
@@ -976,8 +993,10 @@ async function createAudioChain(params: {
  * which still holds frames of its own (lookahead, reordering) and emits
  * packets for them.
  *
- * Encoded packets are re-stamped from the FramePts the frames were queued
- * with, to keep the container timestamps.
+ * Video frames are stamped for the encoder with a synthetic, strictly
+ * increasing timeline (see TranscodeStage.syntheticPtsUs); encoded packets
+ * are re-stamped from the FramePts the frames were queued with, to keep
+ * the container timestamps.
  */
 async function* drainChain(
   chain: TrackChain,
@@ -1037,6 +1056,9 @@ async function* drainChain(
     if (!packet) filterOutput.push(null);
 
     // encoder
+    // only video needs the synthetic clock: its encoders enforce strictly
+    // increasing pts (see syntheticPtsUs); audio encoders take any timeline
+    const isVideo = transcode.encoder.getCodec().type === AVMEDIA_TYPE_VIDEO;
     const encoderOutput: Packet[] = [];
     for (const frame of filterOutput) {
       if (frame && frame.pts !== AV_NOPTS_VALUE && frame.timeBase.den !== 0) {
@@ -1045,6 +1067,25 @@ async function* drainChain(
           duration: frame.duration,
           timeBase: frame.timeBase,
         });
+        if (isVideo) {
+          // stamp the frame for the encoder: a synthetic, strictly
+          // increasing timeline (advanced by each frame's duration) that
+          // no seek can send backward. The stamp is replaced with the
+          // frame's real container timestamp on the output packets below.
+          const stepUs =
+            frame.duration > 0n
+              ? avRescaleQ(frame.duration, frame.timeBase, AV_TIME_BASE_Q)
+              : 0n;
+          transcode.syntheticPtsUs +=
+            stepUs > 0n
+              ? stepUs
+              : avRescaleQ(1n, frame.timeBase, AV_TIME_BASE_Q);
+          frame.pts = avRescaleQ(
+            transcode.syntheticPtsUs,
+            AV_TIME_BASE_Q,
+            frame.timeBase,
+          );
+        }
       }
       const encoded = await transcode.encoder.encodeAll(frame);
       if (traceEncode && frame) {
@@ -1101,9 +1142,13 @@ async function* drainChain(
 
 // Flush the codec buffers and restart the filter graph (filters keep no
 // user-visible flush API, so they are recreated). The encoder is
-// deliberately not flushed: it is configured without B-frames/lookahead
-// buffering, so there is (almost) nothing stale to drop, and flushing an
-// encoder mid-stream wedges it (subsequent sends fail).
+// deliberately not flushed: flushing an encoder mid-stream wedges it
+// (subsequent sends fail). It can simply be kept across seeks because the
+// frames handed to it carry synthetic, strictly increasing timestamps (see
+// TranscodeStage.syntheticPtsUs), so the seek's backward jump in container
+// timestamps never trips the encoder's monotonic-pts handling, and the
+// real container timestamps are restored on its output packets via
+// frameStamps.
 const flushChain = (chain: TrackChain | undefined) => {
   if (!chain?.transcode) return;
   const { decoder, filter, createFilter } = chain.transcode;
@@ -1147,11 +1192,11 @@ async function* pumpTrack(
           { jumped, packetsSinceSeek, from: lastDemuxSecs, to: secs },
           "Flushing the chain after seek",
         );
-        // frameStamps is deliberately left alone: the encoder is not flushed
-        // (see flushChain), so it still holds the frames these entries
-        // describe and will emit their packets. Dropping the entries would
-        // leave every one of those packets matched to the wrong frame, and
-        // the last one to an empty queue.
+        // frameStamps is deliberately left alone: the encoder is not
+        // flushed (see flushChain), so it still holds the frames these
+        // entries describe and will emit their packets. Dropping the
+        // entries would leave every one of those packets matched to the
+        // wrong frame, and the last one to an empty queue.
         flushChain(chain);
       }
     }
@@ -1342,7 +1387,7 @@ export async function prepareStream(
     const codecpar = vStream.codecpar;
     const inWidth = codecpar.width ?? 0;
     const inHeight = codecpar.height ?? 0;
-    const sourceFramerate = streamFrameRate(vStream);
+    const sourceFramerate = avGuessFrameRate(vStream);
     const outputSize = computeScaledDims(inWidth, inHeight, width, height);
 
     const vInfo: VideoStreamInfo = {
