@@ -7,6 +7,7 @@ import {
   AV_NOPTS_VALUE,
   AV_PKT_FLAG_KEY,
   AV_ROUND_NEAR_INF,
+  AV_TIME_BASE_Q,
   AVMEDIA_TYPE_AUDIO,
   AVMEDIA_TYPE_VIDEO,
   type AVPixelFormat,
@@ -235,9 +236,6 @@ function ptsSecs(pts: bigint, timeBase: Rational): number | undefined {
 
 /** Packet pts in seconds, or undefined when it carries no usable timestamp */
 const packetSecs = (packet: Packet) => ptsSecs(packet.pts, packet.timeBase);
-
-/** Time base of one microsecond, for building synthetic encoder timestamps */
-const MICROS = new Rational(1, 1_000_000);
 
 /**
  * Container timestamps of a frame fed to an encoder, used to re-stamp the
@@ -855,10 +853,7 @@ async function createVideoChain(params: {
       context: {
         ...(targetFramerate.num > 0 && targetFramerate.den > 0
           ? {
-              framerate: new Rational(
-                targetFramerate.num,
-                targetFramerate.den,
-              ),
+              framerate: new Rational(targetFramerate.num, targetFramerate.den),
             }
           : {}),
         bitRate: `${bitrateVideo}k`,
@@ -1079,13 +1074,15 @@ async function* drainChain(
           // frame's real container timestamp on the output packets below.
           const stepUs =
             frame.duration > 0n
-              ? avRescaleQ(frame.duration, frame.timeBase, MICROS)
+              ? avRescaleQ(frame.duration, frame.timeBase, AV_TIME_BASE_Q)
               : 0n;
           transcode.syntheticPtsUs +=
-            stepUs > 0n ? stepUs : avRescaleQ(1n, frame.timeBase, MICROS);
+            stepUs > 0n
+              ? stepUs
+              : avRescaleQ(1n, frame.timeBase, AV_TIME_BASE_Q);
           frame.pts = avRescaleQ(
             transcode.syntheticPtsUs,
-            MICROS,
+            AV_TIME_BASE_Q,
             frame.timeBase,
           );
         }
