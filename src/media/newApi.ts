@@ -23,7 +23,6 @@ import {
   type DecoderOptions,
   Demuxer,
   Encoder,
-  type EncoderOptions,
   FF_ENCODER_LIBOPUS,
   FFmpegError,
   FilterAPI,
@@ -624,6 +623,13 @@ type TranscodeStage = {
   filter: FilterAPI;
   encoder: Encoder;
   createFilter: () => FilterAPI;
+  /**
+   * Creates a fresh encoder with the same codec and settings as the
+   * original, wired to the given filter graph. Used on seek, where the
+   * recreated filter graph and the encoder's timestamp bookkeeping must
+   * both start over on the post-seek timeline.
+   */
+  createEncoder: (filter: FilterAPI) => Promise<Encoder>;
 };
 
 /**
@@ -657,6 +663,13 @@ type TrackChain = {
   // output on its way out, whether that output is encoded or passthrough
   bsf: BitStreamFilterAPI[];
   /**
+   * Builds a fresh bitstream filter chain for a (re)created encoder: the
+   * annexb filters source their parameter sets from the encoder's
+   * extradata, so they must be rebuilt alongside it. Absent for audio,
+   * whose opus stream carries its parameters in-band.
+   */
+  createBsf: (encoder: Encoder) => BitStreamFilterAPI[];
+  /**
    * container timestamps of the frames handed to the encoder, matched to its
    * output packets one for one
    */
@@ -667,6 +680,7 @@ const newTrackChain = (
   name: "video" | "audio",
   transcode: TranscodeStage | null,
   bsf: BitStreamFilterAPI[],
+  createBsf: (encoder: Encoder) => BitStreamFilterAPI[] = () => [],
 ): TrackChain => ({
   transcode,
   loggers: {
@@ -677,6 +691,7 @@ const newTrackChain = (
   },
   seekPending: false,
   bsf,
+  createBsf,
   frameStamps: new Queue(),
 });
 
@@ -833,28 +848,34 @@ async function createVideoChain(params: {
       : sourceFramerate;
     const targetFps =
       targetFramerate.den > 0 ? targetFramerate.num / targetFramerate.den : 0;
-    const encoderOptions: EncoderOptions = {
-      filter: videoFilter,
-      decoder: videoDecoder,
-      autoFormat: true,
-      context: {
-        ...(targetFramerate.num > 0 && targetFramerate.den > 0
-          ? {
-              framerate: new Rational(targetFramerate.num, targetFramerate.den),
-            }
-          : {}),
-        bitRate: `${bitrateVideo}k`,
-        rcMaxRate: `${bitrateVideoMax}k`,
-        rcBufferSize: `${Math.round(bitrateVideo / 2)}k`,
-        // keyframes every ~1s, like ffmpeg's `-force_key_frames expr:gte(t,n_forced*1)`
-        gopSize: Math.max(1, Math.round(targetFps > 0 ? targetFps : 30)),
-        // B-frames are not supported by Discord's packetizer
-        maxBFrames: 0,
-      },
-      options: settings.options,
-      signal,
+    const createEncoder = async (filter: FilterAPI): Promise<Encoder> => {
+      if (!videoDecoder) throw new Error("Decoder is not open");
+      return await Encoder.create(settings.name, {
+        filter,
+        decoder: videoDecoder,
+        autoFormat: true,
+        context: {
+          ...(targetFramerate.num > 0 && targetFramerate.den > 0
+            ? {
+                framerate: new Rational(
+                  targetFramerate.num,
+                  targetFramerate.den,
+                ),
+              }
+            : {}),
+          bitRate: `${bitrateVideo}k`,
+          rcMaxRate: `${bitrateVideoMax}k`,
+          rcBufferSize: `${Math.round(bitrateVideo / 2)}k`,
+          // keyframes every ~1s, like ffmpeg's `-force_key_frames expr:gte(t,n_forced*1)`
+          gopSize: Math.max(1, Math.round(targetFps > 0 ? targetFps : 30)),
+          // B-frames are not supported by Discord's packetizer
+          maxBFrames: 0,
+        },
+        options: settings.options,
+        signal,
+      });
     };
-    const videoEncoder = await Encoder.create(settings.name, encoderOptions);
+    const videoEncoder = await createEncoder(videoFilter);
     logger.debug(
       {
         encoder: settings.name,
@@ -863,7 +884,6 @@ async function createVideoChain(params: {
         targetFps,
         bitRate: `${bitrateVideo}k`,
         rcMaxRate: `${bitrateVideoMax}k`,
-        gopSize: encoderOptions.context?.gopSize,
       },
       "Created video encoder",
     );
@@ -875,10 +895,12 @@ async function createVideoChain(params: {
         filter: videoFilter,
         encoder: videoEncoder,
         createFilter,
+        createEncoder,
       },
       // fed by the encoder: the parameter sets live in its extradata, so
       // dump_extra can re-insert them before every keyframe
       createVideoBitStreamFilters(videoEncoder, codec),
+      (encoder) => createVideoBitStreamFilters(encoder, codec),
     );
   } catch (e) {
     logger.error(e, "Failed to create the video chain");
@@ -940,13 +962,17 @@ async function createAudioChain(params: {
         { signal },
       );
     audioFilter = createFilter();
-    const audioEncoder = await Encoder.create(FF_ENCODER_LIBOPUS, {
-      autoResample: true,
-      decoder: audioDecoder,
-      filter: audioFilter,
-      context: { bitRate: `${bitrate}k` },
-      signal,
-    });
+    const createEncoder = async (filter: FilterAPI): Promise<Encoder> => {
+      if (!audioDecoder) throw new Error("Decoder is not open");
+      return await Encoder.create(FF_ENCODER_LIBOPUS, {
+        autoResample: true,
+        decoder: audioDecoder,
+        filter,
+        context: { bitRate: `${bitrate}k` },
+        signal,
+      });
+    };
+    const audioEncoder = await createEncoder(audioFilter);
 
     return newTrackChain(
       "audio",
@@ -955,6 +981,7 @@ async function createAudioChain(params: {
         filter: audioFilter,
         encoder: audioEncoder,
         createFilter,
+        createEncoder,
       },
       // opus is not a video codec, so there is no annexb conversion to do
       [],
@@ -1101,17 +1128,38 @@ async function* drainChain(
   }
 }
 
-// Flush the codec buffers and restart the filter graph (filters keep no
-// user-visible flush API, so they are recreated). The encoder is
-// deliberately not flushed: it is configured without B-frames/lookahead
-// buffering, so there is (almost) nothing stale to drop, and flushing an
-// encoder mid-stream wedges it (subsequent sends fail).
-const flushChain = (chain: TrackChain | undefined) => {
+// Flush the codec buffers, restart the filter graph (filters keep no
+// user-visible flush API, so they are recreated), and recreate the encoder.
+//
+// The encoder is deliberately not flushed: flushing an encoder mid-stream
+// wedges it (subsequent sends fail). But it cannot simply be kept either:
+// encoders need strictly increasing timestamps (node-av moves a frame that
+// lands on the previous tick of the encoder time base, and drops one that
+// lies entirely before it), so a backward seek would see every post-seek
+// frame dropped, freezing the video output while audio keeps going.
+// Recreating the encoder (cheap: it is just avcodec_open2 plus the same
+// options) resets that bookkeeping; the frames it still held internally
+// are discarded with it.
+const flushChain = async (chain: TrackChain | undefined) => {
   if (!chain?.transcode) return;
-  const { decoder, filter, createFilter } = chain.transcode;
+  const { decoder, filter, encoder, createFilter, createEncoder } =
+    chain.transcode;
   decoder.getCodecContext()?.flushBuffers();
   chain.transcode.filter = createFilter();
   filter.close();
+
+  // the fresh encoder first: if its creation fails, the error propagates
+  // and the old encoder is left untouched, instead of silently draining
+  // nothing from a closed encoder (encode() no-ops on a closed encoder)
+  const newEncoder = await createEncoder(chain.transcode.filter);
+  chain.transcode.encoder = newEncoder;
+  encoder.close();
+  // the discarded frames will never be emitted, so drop the stamps
+  // describing them; the fresh encoder's output re-stamps from here on
+  chain.frameStamps = new Queue();
+  // the annexb filters read the parameter sets from the encoder's extradata
+  for (const bsf of chain.bsf) bsf.close();
+  chain.bsf = chain.createBsf(newEncoder);
 };
 
 /**
@@ -1149,12 +1197,10 @@ async function* pumpTrack(
           { jumped, packetsSinceSeek, from: lastDemuxSecs, to: secs },
           "Flushing the chain after seek",
         );
-        // frameStamps is deliberately left alone: the encoder is not flushed
-        // (see flushChain), so it still holds the frames these entries
-        // describe and will emit their packets. Dropping the entries would
-        // leave every one of those packets matched to the wrong frame, and
-        // the last one to an empty queue.
-        flushChain(chain);
+        // frameStamps is reset by flushChain: the encoder is recreated (see
+        // flushChain), so its held frames and their stamps are dropped
+        // together
+        await flushChain(chain);
       }
     }
     if (secs !== undefined) lastDemuxSecs = secs;
