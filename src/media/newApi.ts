@@ -23,6 +23,7 @@ import {
   type DecoderOptions,
   Demuxer,
   Encoder,
+  type EncoderOptions,
   FF_ENCODER_LIBOPUS,
   FFmpegError,
   FilterAPI,
@@ -234,6 +235,9 @@ function ptsSecs(pts: bigint, timeBase: Rational): number | undefined {
 
 /** Packet pts in seconds, or undefined when it carries no usable timestamp */
 const packetSecs = (packet: Packet) => ptsSecs(packet.pts, packet.timeBase);
+
+/** Time base of one microsecond, for building synthetic encoder timestamps */
+const MICROS = new Rational(1, 1_000_000);
 
 /**
  * Container timestamps of a frame fed to an encoder, used to re-stamp the
@@ -624,12 +628,17 @@ type TranscodeStage = {
   encoder: Encoder;
   createFilter: () => FilterAPI;
   /**
-   * Creates a fresh encoder with the same codec and settings as the
-   * original, wired to the given filter graph. Used on seek, where the
-   * recreated filter graph and the encoder's timestamp bookkeeping must
-   * both start over on the post-seek timeline.
+   * The monotonic clock the encoder is fed from, in microseconds. Frames
+   * are stamped with it (advanced by each frame's duration) instead of
+   * their container timestamps before encoding: encoders require strictly
+   * increasing timestamps, which a seek violates by moving the container
+   * timeline backward, and node-av drops frames that fall entirely before
+   * the encoder's last tick - freezing the video output while audio keeps
+   * going. On the synthetic clock every frame is in order, no matter how
+   * the source seeks. The real container timestamps are restored on the
+   * output packets through frameStamps.
    */
-  createEncoder: (filter: FilterAPI) => Promise<Encoder>;
+  syntheticPtsUs: bigint;
 };
 
 /**
@@ -663,13 +672,6 @@ type TrackChain = {
   // output on its way out, whether that output is encoded or passthrough
   bsf: BitStreamFilterAPI[];
   /**
-   * Builds a fresh bitstream filter chain for a (re)created encoder: the
-   * annexb filters source their parameter sets from the encoder's
-   * extradata, so they must be rebuilt alongside it. Absent for audio,
-   * whose opus stream carries its parameters in-band.
-   */
-  createBsf: (encoder: Encoder) => BitStreamFilterAPI[];
-  /**
    * container timestamps of the frames handed to the encoder, matched to its
    * output packets one for one
    */
@@ -680,7 +682,6 @@ const newTrackChain = (
   name: "video" | "audio",
   transcode: TranscodeStage | null,
   bsf: BitStreamFilterAPI[],
-  createBsf: (encoder: Encoder) => BitStreamFilterAPI[] = () => [],
 ): TrackChain => ({
   transcode,
   loggers: {
@@ -691,7 +692,6 @@ const newTrackChain = (
   },
   seekPending: false,
   bsf,
-  createBsf,
   frameStamps: new Queue(),
 });
 
@@ -848,34 +848,31 @@ async function createVideoChain(params: {
       : sourceFramerate;
     const targetFps =
       targetFramerate.den > 0 ? targetFramerate.num / targetFramerate.den : 0;
-    const createEncoder = async (filter: FilterAPI): Promise<Encoder> => {
-      if (!videoDecoder) throw new Error("Decoder is not open");
-      return await Encoder.create(settings.name, {
-        filter,
-        decoder: videoDecoder,
-        autoFormat: true,
-        context: {
-          ...(targetFramerate.num > 0 && targetFramerate.den > 0
-            ? {
-                framerate: new Rational(
-                  targetFramerate.num,
-                  targetFramerate.den,
-                ),
-              }
-            : {}),
-          bitRate: `${bitrateVideo}k`,
-          rcMaxRate: `${bitrateVideoMax}k`,
-          rcBufferSize: `${Math.round(bitrateVideo / 2)}k`,
-          // keyframes every ~1s, like ffmpeg's `-force_key_frames expr:gte(t,n_forced*1)`
-          gopSize: Math.max(1, Math.round(targetFps > 0 ? targetFps : 30)),
-          // B-frames are not supported by Discord's packetizer
-          maxBFrames: 0,
-        },
-        options: settings.options,
-        signal,
-      });
+    const encoderOptions: EncoderOptions = {
+      filter: videoFilter,
+      decoder: videoDecoder,
+      autoFormat: true,
+      context: {
+        ...(targetFramerate.num > 0 && targetFramerate.den > 0
+          ? {
+              framerate: new Rational(
+                targetFramerate.num,
+                targetFramerate.den,
+              ),
+            }
+          : {}),
+        bitRate: `${bitrateVideo}k`,
+        rcMaxRate: `${bitrateVideoMax}k`,
+        rcBufferSize: `${Math.round(bitrateVideo / 2)}k`,
+        // keyframes every ~1s, like ffmpeg's `-force_key_frames expr:gte(t,n_forced*1)`
+        gopSize: Math.max(1, Math.round(targetFps > 0 ? targetFps : 30)),
+        // B-frames are not supported by Discord's packetizer
+        maxBFrames: 0,
+      },
+      options: settings.options,
+      signal,
     };
-    const videoEncoder = await createEncoder(videoFilter);
+    const videoEncoder = await Encoder.create(settings.name, encoderOptions);
     logger.debug(
       {
         encoder: settings.name,
@@ -884,6 +881,7 @@ async function createVideoChain(params: {
         targetFps,
         bitRate: `${bitrateVideo}k`,
         rcMaxRate: `${bitrateVideoMax}k`,
+        gopSize: encoderOptions.context?.gopSize,
       },
       "Created video encoder",
     );
@@ -895,12 +893,11 @@ async function createVideoChain(params: {
         filter: videoFilter,
         encoder: videoEncoder,
         createFilter,
-        createEncoder,
+        syntheticPtsUs: 0n,
       },
       // fed by the encoder: the parameter sets live in its extradata, so
       // dump_extra can re-insert them before every keyframe
       createVideoBitStreamFilters(videoEncoder, codec),
-      (encoder) => createVideoBitStreamFilters(encoder, codec),
     );
   } catch (e) {
     logger.error(e, "Failed to create the video chain");
@@ -962,17 +959,13 @@ async function createAudioChain(params: {
         { signal },
       );
     audioFilter = createFilter();
-    const createEncoder = async (filter: FilterAPI): Promise<Encoder> => {
-      if (!audioDecoder) throw new Error("Decoder is not open");
-      return await Encoder.create(FF_ENCODER_LIBOPUS, {
-        autoResample: true,
-        decoder: audioDecoder,
-        filter,
-        context: { bitRate: `${bitrate}k` },
-        signal,
-      });
-    };
-    const audioEncoder = await createEncoder(audioFilter);
+    const audioEncoder = await Encoder.create(FF_ENCODER_LIBOPUS, {
+      autoResample: true,
+      decoder: audioDecoder,
+      filter: audioFilter,
+      context: { bitRate: `${bitrate}k` },
+      signal,
+    });
 
     return newTrackChain(
       "audio",
@@ -981,7 +974,7 @@ async function createAudioChain(params: {
         filter: audioFilter,
         encoder: audioEncoder,
         createFilter,
-        createEncoder,
+        syntheticPtsUs: 0n,
       },
       // opus is not a video codec, so there is no annexb conversion to do
       [],
@@ -1005,8 +998,10 @@ async function createAudioChain(params: {
  * which still holds frames of its own (lookahead, reordering) and emits
  * packets for them.
  *
- * Encoded packets are re-stamped from the FramePts the frames were queued
- * with, to keep the container timestamps.
+ * Video frames are stamped for the encoder with a synthetic, strictly
+ * increasing timeline (see TranscodeStage.syntheticPtsUs); encoded packets
+ * are re-stamped from the FramePts the frames were queued with, to keep
+ * the container timestamps.
  */
 async function* drainChain(
   chain: TrackChain,
@@ -1066,6 +1061,9 @@ async function* drainChain(
     if (!packet) filterOutput.push(null);
 
     // encoder
+    // only video needs the synthetic clock: its encoders enforce strictly
+    // increasing pts (see syntheticPtsUs); audio encoders take any timeline
+    const isVideo = transcode.encoder.getCodec().type === AVMEDIA_TYPE_VIDEO;
     const encoderOutput: Packet[] = [];
     for (const frame of filterOutput) {
       if (frame && frame.pts !== AV_NOPTS_VALUE && frame.timeBase.den !== 0) {
@@ -1074,6 +1072,23 @@ async function* drainChain(
           duration: frame.duration,
           timeBase: frame.timeBase,
         });
+        if (isVideo) {
+          // stamp the frame for the encoder: a synthetic, strictly
+          // increasing timeline (advanced by each frame's duration) that
+          // no seek can send backward. The stamp is replaced with the
+          // frame's real container timestamp on the output packets below.
+          const stepUs =
+            frame.duration > 0n
+              ? avRescaleQ(frame.duration, frame.timeBase, MICROS)
+              : 0n;
+          transcode.syntheticPtsUs +=
+            stepUs > 0n ? stepUs : avRescaleQ(1n, frame.timeBase, MICROS);
+          frame.pts = avRescaleQ(
+            transcode.syntheticPtsUs,
+            MICROS,
+            frame.timeBase,
+          );
+        }
       }
       const encoded = await transcode.encoder.encodeAll(frame);
       if (traceEncode && frame) {
@@ -1128,38 +1143,21 @@ async function* drainChain(
   }
 }
 
-// Flush the codec buffers, restart the filter graph (filters keep no
-// user-visible flush API, so they are recreated), and recreate the encoder.
-//
-// The encoder is deliberately not flushed: flushing an encoder mid-stream
-// wedges it (subsequent sends fail). But it cannot simply be kept either:
-// encoders need strictly increasing timestamps (node-av moves a frame that
-// lands on the previous tick of the encoder time base, and drops one that
-// lies entirely before it), so a backward seek would see every post-seek
-// frame dropped, freezing the video output while audio keeps going.
-// Recreating the encoder (cheap: it is just avcodec_open2 plus the same
-// options) resets that bookkeeping; the frames it still held internally
-// are discarded with it.
-const flushChain = async (chain: TrackChain | undefined) => {
+// Flush the codec buffers and restart the filter graph (filters keep no
+// user-visible flush API, so they are recreated). The encoder is
+// deliberately not flushed: flushing an encoder mid-stream wedges it
+// (subsequent sends fail). It can simply be kept across seeks because the
+// frames handed to it carry synthetic, strictly increasing timestamps (see
+// TranscodeStage.syntheticPtsUs), so the seek's backward jump in container
+// timestamps never trips the encoder's monotonic-pts handling, and the
+// real container timestamps are restored on its output packets via
+// frameStamps.
+const flushChain = (chain: TrackChain | undefined) => {
   if (!chain?.transcode) return;
-  const { decoder, filter, encoder, createFilter, createEncoder } =
-    chain.transcode;
+  const { decoder, filter, createFilter } = chain.transcode;
   decoder.getCodecContext()?.flushBuffers();
   chain.transcode.filter = createFilter();
   filter.close();
-
-  // the fresh encoder first: if its creation fails, the error propagates
-  // and the old encoder is left untouched, instead of silently draining
-  // nothing from a closed encoder (encode() no-ops on a closed encoder)
-  const newEncoder = await createEncoder(chain.transcode.filter);
-  chain.transcode.encoder = newEncoder;
-  encoder.close();
-  // the discarded frames will never be emitted, so drop the stamps
-  // describing them; the fresh encoder's output re-stamps from here on
-  chain.frameStamps.clear();
-  // the annexb filters read the parameter sets from the encoder's extradata
-  for (const bsf of chain.bsf) bsf.close();
-  chain.bsf = chain.createBsf(newEncoder);
 };
 
 /**
@@ -1197,10 +1195,12 @@ async function* pumpTrack(
           { jumped, packetsSinceSeek, from: lastDemuxSecs, to: secs },
           "Flushing the chain after seek",
         );
-        // frameStamps is reset by flushChain: the encoder is recreated (see
-        // flushChain), so its held frames and their stamps are dropped
-        // together
-        await flushChain(chain);
+        // frameStamps is deliberately left alone: the encoder is not
+        // flushed (see flushChain), so it still holds the frames these
+        // entries describe and will emit their packets. Dropping the
+        // entries would leave every one of those packets matched to the
+        // wrong frame, and the last one to an empty queue.
+        flushChain(chain);
       }
     }
     if (secs !== undefined) lastDemuxSecs = secs;
