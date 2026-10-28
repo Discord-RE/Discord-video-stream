@@ -1156,7 +1156,7 @@ const flushChain = async (chain: TrackChain | undefined) => {
   encoder.close();
   // the discarded frames will never be emitted, so drop the stamps
   // describing them; the fresh encoder's output re-stamps from here on
-  chain.frameStamps = new Queue();
+  chain.frameStamps.clear();
   // the annexb filters read the parameter sets from the encoder's extradata
   for (const bsf of chain.bsf) bsf.close();
   chain.bsf = chain.createBsf(newEncoder);
