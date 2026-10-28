@@ -4,12 +4,12 @@ import { PassThrough } from "node:stream";
 import { Log } from "debug-level";
 import {
   avGetCodecName,
+  avGuessFrameRate,
   BitStreamFilterAPI,
   type CodecParameters,
   Demuxer,
   type Encoder,
   type Packet,
-  type Rational,
   type Stream,
 } from "node-av";
 import pDebounce from "p-debounce";
@@ -45,19 +45,6 @@ export const allowedVideoCodec = new Set([
 ]);
 
 const allowedAudioCodec = new Set([AVCodecID.AV_CODEC_ID_OPUS]);
-
-/**
- * Frame rate of the stream. `codecpar.frameRate` is often missing (0/0), so
- * it falls back to the stream's average and real base frame rates.
- */
-export function streamFrameRate(stream: Stream): Rational {
-  const codecpar = stream.codecpar.frameRate;
-  if (codecpar.num > 0 && codecpar.den > 0) return codecpar;
-  if (stream.avgFrameRate.num > 0 && stream.avgFrameRate.den > 0) {
-    return stream.avgFrameRate;
-  }
-  return stream.rFrameRate;
-}
 
 export function parseOpusPacketDuration(frame: Uint8Array) {
   // https://datatracker.ietf.org/doc/html/rfc6716#section-3.1
@@ -278,7 +265,7 @@ export async function demux(input: Readable, { format }: DemuxerOptions) {
     }
 
     const codecpar = vStream.codecpar;
-    const framerate = streamFrameRate(vStream);
+    const framerate = avGuessFrameRate(vStream);
     vInfo = {
       index: vStream.index,
       codec: codecId,

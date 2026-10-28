@@ -14,6 +14,7 @@ import {
   avGetCodecName,
   avGetPixFmtName,
   avGetSampleFmtName,
+  avGuessFrameRate,
   avRescaleQ,
   avRescaleRnd,
   type BitStreamFilterAPI,
@@ -51,7 +52,6 @@ import {
   allowedVideoCodec,
   createVideoBitStreamFilters,
   demux,
-  streamFrameRate,
   type VideoStreamInfo,
 } from "./LibavDemuxer.js";
 import { VideoStream } from "./VideoStream.js";
@@ -257,7 +257,7 @@ const codecName = (codecId: number) =>
   avGetCodecName(codecId as Parameters<typeof avGetCodecName>[0]);
 
 /** Readable rational ("num/den"), for logs carrying time bases and framerates */
-function describeRational(rational: Rational): string {
+function describeRational(rational: IRational): string {
   return `${rational.num}/${rational.den}`;
 }
 
@@ -327,7 +327,7 @@ function describeStream(stream: Stream) {
     timeBase: describeRational(stream.timeBase),
   };
   if (codecpar.codecType === AVMEDIA_TYPE_VIDEO) {
-    const framerate = streamFrameRate(stream);
+    const framerate = avGuessFrameRate(stream);
     return {
       ...common,
       type: "video",
@@ -700,7 +700,7 @@ async function createVideoChain(params: {
   /** codec of the packets the encoder emits */
   codec: AVCodecID;
   options: PrepareStreamOptions;
-  sourceFramerate: Rational;
+  sourceFramerate: IRational;
   /** dimensions the video is scaled to */
   outputSize: { width: number; height: number };
   signal?: AbortSignal;
@@ -839,7 +839,9 @@ async function createVideoChain(params: {
       autoFormat: true,
       context: {
         ...(targetFramerate.num > 0 && targetFramerate.den > 0
-          ? { framerate: targetFramerate }
+          ? {
+              framerate: new Rational(targetFramerate.num, targetFramerate.den),
+            }
           : {}),
         bitRate: `${bitrateVideo}k`,
         rcMaxRate: `${bitrateVideoMax}k`,
@@ -1342,7 +1344,7 @@ export async function prepareStream(
     const codecpar = vStream.codecpar;
     const inWidth = codecpar.width ?? 0;
     const inHeight = codecpar.height ?? 0;
-    const sourceFramerate = streamFrameRate(vStream);
+    const sourceFramerate = avGuessFrameRate(vStream);
     const outputSize = computeScaledDims(inWidth, inHeight, width, height);
 
     const vInfo: VideoStreamInfo = {
