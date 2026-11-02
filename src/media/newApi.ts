@@ -241,6 +241,9 @@ function ptsSecs(pts: bigint, timeBase: Rational): number | undefined {
 /** Packet pts in seconds, or undefined when it carries no usable timestamp */
 const packetSecs = (packet: Packet) => ptsSecs(packet.pts, packet.timeBase);
 
+/** Time base of one millisecond, for rescaling timestamps in the log helpers */
+const MS_RATIONAL = new Rational(1, 1_000);
+
 /**
  * Container timestamps of a frame fed to an encoder, used to re-stamp the
  * encoded packet.
@@ -267,13 +270,17 @@ function describeRational(rational: IRational): string {
 }
 
 /**
- * A pts in seconds rounded to milliseconds, for the log helpers. Raw values
- * carry float noise from the time base conversion ("0.30000000000000004"),
- * which crowds out the fields worth reading in a per-frame trace.
+ * A pts in seconds rounded to milliseconds, for the log helpers. The pts is
+ * rescaled from the frame's time base into milliseconds, then to seconds.
  */
 function stampSecs(pts: bigint, timeBase: Rational): number | undefined {
-  const secs = ptsSecs(pts, timeBase);
-  return secs === undefined ? undefined : Math.round(secs * 1000) / 1000;
+  if (pts === AV_NOPTS_VALUE) return undefined;
+  const { num, den } = timeBase;
+  if (!Number.isFinite(num) || !Number.isFinite(den) || den === 0) {
+    return undefined;
+  }
+  const secsMillis = avRescaleQ(pts, timeBase, MS_RATIONAL);
+  return Number(secsMillis) / 1_000;
 }
 
 /**
