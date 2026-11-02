@@ -169,10 +169,14 @@ export type Controller = {
    * Seek the stream to the given position in seconds.
    * The transport timestamps are kept continuous so audio/video stays in
    * sync and playback pacing is unaffected.
+   *
+   * The position is not set here: it is tracked from the encoded packets
+   * (see PlaybackState.position), which, once the post-seek content starts
+   * flowing, come from the encoder with their post-seek timestamps.
    */
   seek(positionSeconds: number): Promise<boolean>;
   /**
-   * Current playback position in seconds
+   * Current playback position in seconds, tracked from the encoded packets
    */
   readonly position: number | undefined;
   /**
@@ -1201,12 +1205,18 @@ async function* pumpTrack(
       }
     }
     if (secs !== undefined) lastDemuxSecs = secs;
-    onPacket?.(packet);
 
     // with a transcode stage the decoder reads the packet and the stages
     // behind it work on frames; without one the packet itself is what the
     // bitstream filters read. Either way it is done with afterwards.
-    yield* drainChain(chain, packet);
+    //
+    // the consumer sees the packet the chain produced - the encoded packet
+    // when transcoding, the input's own packet otherwise - so the position
+    // tracked downstream always reads the encoder's (re-stamped) timestamps
+    for await (const out of drainChain(chain, packet)) {
+      onPacket?.(out);
+      yield out;
+    }
     packet.free();
   }
   if (!chain.transcode) return;
@@ -1218,9 +1228,10 @@ async function* pumpTrack(
 /** Live playback state, shared between the pipeline and the controller */
 type PlaybackState = {
   /**
-   * Current playback position in seconds, tracked from the demuxer's video
-   * packets. With copyTs, packet timestamps are the container's absolute
-   * timestamps, so this directly reflects the position.
+   * Current playback position in seconds, tracked from the packets the
+   * chains yield: the encoded packets when transcoding, the input's own
+   * packets otherwise. The encoded packets are re-stamped with the frames'
+   * real container timestamps, so this always reflects the encoder's output.
    */
   position: number | undefined;
   /** Current audio volume multiplier (1.0 = original volume) */
@@ -1266,7 +1277,9 @@ function createController(params: {
       // filter graph anchors on post-seek timestamps
       videoChain.seekPending = true;
       if (audioChain) audioChain.seekPending = true;
-      state.position = positionSeconds;
+      // the position is deliberately not set here: it is tracked from the
+      // encoded packets that flow after the seek, so the encoder stays the
+      // source of truth
       return true;
     },
     get position() {
@@ -1481,7 +1494,7 @@ export async function prepareStream(
       "Pipeline ready",
     );
 
-    // track the position from the video packets on their way out
+    // track the position from the encoded packets on their way out
     const trackPosition = (packet: Packet) => {
       const secs = packetSecs(packet);
       if (secs !== undefined) state.position = secs;
