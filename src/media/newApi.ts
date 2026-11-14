@@ -1567,7 +1567,7 @@ export type StartStreamSessionOptions = {
    * Set stream type as "Go Live" or camera stream
    */
   type: "go-live" | "camera";
-}
+};
 
 export type PlayStreamOptions = {
   /**
@@ -1617,18 +1617,17 @@ function isPreparedStream(
 
 export async function startStreamSession(
   streamer: Streamer,
-  options: Partial<StartStreamSessionOptions> = {}
+  options: Partial<StartStreamSessionOptions> = {},
 ) {
   if (!streamer.voiceConnection)
     throw new Error("You're not in a voice connection");
   const type = options.type ?? "go-live";
   let stopStream: () => void;
   let conn: WebRtcConnWrapper;
-  if (type == "go-live") {
+  if (type === "go-live") {
     conn = await streamer.createStream();
     stopStream = () => streamer.stopStream();
-  }
-  else {
+  } else {
     conn = streamer.voiceConnection.webRtcConn;
     streamer.signalVideo(true);
     stopStream = () => streamer.signalVideo(false);
@@ -1639,8 +1638,8 @@ export async function startStreamSession(
       conn.mediaConnection.setSpeaking(false);
       conn.mediaConnection.setVideoAttributes(false);
       stopStream();
-    }
-  }
+    },
+  };
 }
 
 export async function playStream2(
@@ -1777,7 +1776,9 @@ export async function playStream2(
           .resize(1024, 576, { fit: "inside" })
           .jpeg()
           .toBuffer()
-          .then((image) => conn.mediaConnection.streamer.setStreamPreview(image))
+          .then((image) =>
+            conn.mediaConnection.streamer.setStreamPreview(image),
+          )
           .catch(() => {})
           .finally(() => {
             for (const frame of frames) frame.free();
@@ -1819,5 +1820,7 @@ export async function playStream(
   cancelSignal?: AbortSignal,
 ) {
   const { conn, stopStream } = await startStreamSession(streamer, options);
-  return playStream2(input, conn, options, cancelSignal).finally(() => stopStream());
+  return playStream2(input, conn, options, cancelSignal).finally(() =>
+    stopStream(),
+  );
 }
