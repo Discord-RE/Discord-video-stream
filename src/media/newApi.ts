@@ -1562,12 +1562,14 @@ export async function prepareStream(
   }
 }
 
-export type PlayStreamOptions = {
+export type StartStreamSessionOptions = {
   /**
    * Set stream type as "Go Live" or camera stream
    */
   type: "go-live" | "camera";
+};
 
+export type PlayStreamOptions = {
   /**
    * Set format of the stream
    */
@@ -1613,19 +1615,43 @@ function isPreparedStream(
   return !Readable.isReadable(input as Readable);
 }
 
-export async function playStream(
-  input: Readable | PreparedStream,
+export async function startStreamSession(
   streamer: Streamer,
+  options: Partial<StartStreamSessionOptions> = {},
+) {
+  if (!streamer.voiceConnection)
+    throw new Error("You're not in a voice connection");
+  const type = options.type ?? "go-live";
+  let stopStream: () => void;
+  let conn: WebRtcConnWrapper;
+  if (type === "go-live") {
+    conn = await streamer.createStream();
+    stopStream = () => streamer.stopStream();
+  } else {
+    conn = streamer.voiceConnection.webRtcConn;
+    streamer.signalVideo(true);
+    stopStream = () => streamer.signalVideo(false);
+  }
+  return {
+    conn,
+    stopStream: () => {
+      conn.mediaConnection.setSpeaking(false);
+      conn.mediaConnection.setVideoAttributes(false);
+      stopStream();
+    },
+  };
+}
+
+export async function playStream2(
+  input: Readable | PreparedStream,
+  conn: WebRtcConnWrapper,
   options: Partial<PlayStreamOptions> = {},
   cancelSignal?: AbortSignal,
 ) {
   const logger = new Log("playStream");
   cancelSignal?.throwIfAborted();
-  if (!streamer.voiceConnection)
-    throw new Error("Bot is not connected to a voice channel");
 
   const defaultOptions = {
-    type: "go-live",
     format: "nut",
     width: (video) => video.width,
     height: (video) => video.height,
@@ -1636,8 +1662,6 @@ export async function playStream(
 
   function mergeOptions(opts: Partial<PlayStreamOptions>) {
     return {
-      type: opts.type ?? defaultOptions.type,
-
       format: opts.format ?? defaultOptions.format,
 
       width:
@@ -1681,17 +1705,6 @@ export async function playStream(
   if (!video) throw new Error("No video stream in media");
 
   const cleanupFuncs: (() => unknown)[] = [];
-
-  let conn: WebRtcConnWrapper;
-  let stopStream: () => unknown;
-  if (mergedOptions.type === "go-live") {
-    conn = await streamer.createStream();
-    stopStream = () => streamer.stopStream();
-  } else {
-    conn = streamer.voiceConnection.webRtcConn;
-    streamer.signalVideo(true);
-    stopStream = () => streamer.signalVideo(false);
-  }
   conn.setPacketizer(videoCodecMap[video.codec]);
   conn.mediaConnection.setSpeaking(true);
   const { width, height, frameRate } = mergedOptions;
@@ -1723,7 +1736,7 @@ export async function playStream(
       vStream.on("pts", stopBurst);
     }
   }
-  if (mergedOptions.streamPreview && mergedOptions.type === "go-live") {
+  if (mergedOptions.streamPreview) {
     (async () => {
       const logger = new Log("playStream:preview");
       logger.debug("Initializing decoder for stream preview");
@@ -1763,7 +1776,9 @@ export async function playStream(
           .resize(1024, 576, { fit: "inside" })
           .jpeg()
           .toBuffer()
-          .then((image) => streamer.setStreamPreview(image))
+          .then((image) =>
+            conn.mediaConnection.streamer.setStreamPreview(image),
+          )
           .catch(() => {})
           .finally(() => {
             for (const frame of frames) frame.free();
@@ -1774,11 +1789,6 @@ export async function playStream(
     })();
   }
   const promise = new Promise<void>((resolve, reject) => {
-    cleanupFuncs.push(() => {
-      stopStream();
-      conn.mediaConnection.setSpeaking(false);
-      conn.mediaConnection.setVideoAttributes(false);
-    });
     let cleanedUp = false;
     const cleanup = () => {
       if (cleanedUp) return;
@@ -1801,4 +1811,16 @@ export async function playStream(
   });
   promise.catch(() => {});
   return promise;
+}
+
+export async function playStream(
+  input: Readable | PreparedStream,
+  streamer: Streamer,
+  options: Partial<PlayStreamOptions & StartStreamSessionOptions> = {},
+  cancelSignal?: AbortSignal,
+) {
+  const { conn, stopStream } = await startStreamSession(streamer, options);
+  return playStream2(input, conn, options, cancelSignal).finally(() =>
+    stopStream(),
+  );
 }
